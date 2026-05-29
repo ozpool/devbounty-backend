@@ -8,6 +8,10 @@
   "engines": {
     "node": ">=20 <23"
   },
+  "workspaces": [
+    "api",
+    "contracts"
+  ],
   "scripts": {
     "prepare": "husky",
     "format": "prettier --write .",
@@ -18,7 +22,8 @@
     "@commitlint/config-conventional": "^19.5.0",
     "husky": "^9.1.6",
     "lint-staged": "^15.2.10",
-    "prettier": "^3.3.3"
+    "prettier": "^3.3.3",
+    "typescript": "^5.7.2"
   },
   "lint-staged": {
     "*.{ts,js,cjs,mjs,json,md,yml,yaml}": "prettier --write"
