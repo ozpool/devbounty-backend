@@ -1,0 +1,26 @@
+{
+  "name": "devbounty-backend",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Decentralized bug-bounty platform - smart-contract escrow on Arbitrum Sepolia (USDC) released by GitHub merge webhooks. Express API + indexer + Hardhat contracts.",
+  "license": "MIT",
+  "author": "ozpool",
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "scripts": {
+    "prepare": "husky",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.5.0",
+    "@commitlint/config-conventional": "^19.5.0",
+    "husky": "^9.1.6",
+    "lint-staged": "^15.2.10",
+    "prettier": "^3.3.3"
+  },
+  "lint-staged": {
+    "*.{ts,js,cjs,mjs,json,md,yml,yaml}": "prettier --write"
+  }
+}

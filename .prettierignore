@@ -1,0 +1,9 @@
+node_modules/
+dist/
+build/
+coverage/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+api/src/abi/
+package-lock.json
