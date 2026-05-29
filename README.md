@@ -16,4 +16,3 @@ Bootstrapping — see the
 
 - Conventional Commits enforced by a `commit-msg` hook (commitlint).
 - `pre-commit` runs a repo-hygiene gate + prettier (lint-staged).
-- See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the branch / PR workflow.
