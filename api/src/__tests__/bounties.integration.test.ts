@@ -1,0 +1,134 @@
+/**
+ * Integration tests for the bounty create / list / detail endpoints.
+ */
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import request from 'supertest';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+
+process.env['NODE_ENV'] = 'test';
+process.env['LOG_LEVEL'] = 'fatal';
+process.env['CORS_ORIGIN'] = 'http://localhost:3000';
+process.env['API_PUBLIC_BASE_URL'] = 'http://localhost:4000';
+process.env['INTERNAL_HEALTH_TOKEN'] = 'test-internal-token';
+
+const mongod = await MongoMemoryServer.create();
+process.env['MONGO_URI'] = mongod.getUri();
+
+const { createApp } = await import('../api/app.js');
+const { signSession } = await import('../shared/auth/jwt.js');
+const { BountyModel, IdempotencyKeyModel } = await import('../shared/models/index.js');
+
+const ADDRESS = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+const COOKIE = `devbounty_jwt=${signSession({ sub: ADDRESS, role: 'hunter' })}`;
+
+function validBounty(overrides: Record<string, unknown> = {}) {
+  return {
+    repoFullName: 'octocat/hello',
+    githubRepoId: 99,
+    issueNumber: 7,
+    issueTitle: 'Fix the bug',
+    issueUrl: 'https://github.com/octocat/hello/issues/7',
+    amountUsdc: '250',
+    language: 'typescript',
+    ...overrides,
+  };
+}
+
+beforeAll(async () => {
+  await mongoose.connect(mongod.getUri());
+}, 30_000);
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongod.stop();
+});
+
+afterEach(async () => {
+  await BountyModel.deleteMany({});
+  await IdempotencyKeyModel.deleteMany({});
+});
+
+describe('bounties', () => {
+  it('creates a bounty and returns it by id', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    expect(create.status).toBe(201);
+    expect(create.body.lifecycleStatus).toBe('pending_deposit');
+    const id = create.body.bountyId as string;
+    expect(id).toMatch(/^0x[0-9a-f]{64}$/);
+
+    const detail = await request(app).get(`/bounties/${id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.maintainerAddress).toBe(ADDRESS);
+    expect(detail.body.repo.fullName).toBe('octocat/hello');
+    expect(detail.body.claims).toEqual([]);
+    // No internal fields leak.
+    expect(detail.body._id).toBeUndefined();
+    expect(detail.body.__v).toBeUndefined();
+  });
+
+  it('requires auth to create', async () => {
+    const res = await request(createApp()).post('/bounties').send(validBounty());
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects an invalid payload', async () => {
+    const res = await request(createApp())
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .send(validBounty({ amountUsdc: 'not-a-number' }));
+    expect(res.status).toBe(400);
+  });
+
+  it('replays the same response for a repeated Idempotency-Key', async () => {
+    const app = createApp();
+    const key = 'idem-key-123';
+    const first = await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .set('Idempotency-Key', key)
+      .send(validBounty());
+    const second = await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .set('Idempotency-Key', key)
+      .send(validBounty());
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body.bountyId).toBe(first.body.bountyId);
+    expect(await BountyModel.countDocuments({})).toBe(1);
+  });
+
+  it('lists and filters bounties with pagination', async () => {
+    const app = createApp();
+    await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .send(validBounty({ language: 'typescript' }));
+    await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .send(validBounty({ language: 'rust', issueNumber: 8 }));
+
+    const all = await request(app).get('/bounties');
+    expect(all.status).toBe(200);
+    expect(all.body.total).toBe(2);
+    expect(all.body.items).toHaveLength(2);
+    expect(all.body.page).toBe(1);
+
+    const rust = await request(app).get('/bounties?language=rust');
+    expect(rust.body.total).toBe(1);
+    expect(rust.body.items[0].language).toBe('rust');
+
+    const paged = await request(app).get('/bounties?pageSize=1&page=2');
+    expect(paged.body.items).toHaveLength(1);
+    expect(paged.body.pageSize).toBe(1);
+  });
+
+  it('returns 404 for an unknown bounty', async () => {
+    const res = await request(createApp()).get('/bounties/0xdeadbeef');
+    expect(res.status).toBe(404);
+  });
+});
