@@ -109,39 +109,48 @@ export async function handleBountyRefunded(e: RefundedEvent): Promise<void> {
   );
 }
 
-interface HunterAggregate {
-  total: Types.Decimal128;
-  payoutCount: number;
-  repos: string[];
-  languages: (string | null)[];
+interface HunterFacet {
+  totals: { total: Types.Decimal128; payoutCount: number; repos: string[] }[];
+  langs: { _id: string; count: number }[];
 }
 
 // Recompute the hunter's denormalised counters from the insert-only
 // reputation_events (never incremented in place), so they always reconcile with
-// the source of truth even after a replay.
+// the source of truth even after a replay. One facet computes the money/repo
+// totals; the other counts payouts per language for the profile breakdown.
 export async function recomputeHunter(address: string): Promise<void> {
   const hunter = getAddress(address);
-  const rows = await ReputationEventModel.aggregate<HunterAggregate>([
+  const rows = await ReputationEventModel.aggregate<HunterFacet>([
     { $match: { hunterAddress: hunter, type: 'payout' } },
     {
-      $group: {
-        _id: '$hunterAddress',
-        total: { $sum: { $toDecimal: '$amountUsdc' } },
-        payoutCount: { $sum: 1 },
-        repos: { $addToSet: '$repoFullName' },
-        languages: { $addToSet: '$language' },
+      $facet: {
+        totals: [
+          {
+            $group: {
+              _id: null,
+              total: { $sum: { $toDecimal: '$amountUsdc' } },
+              payoutCount: { $sum: 1 },
+              repos: { $addToSet: '$repoFullName' },
+            },
+          },
+        ],
+        langs: [
+          { $match: { language: { $ne: null } } },
+          { $group: { _id: '$language', count: { $sum: 1 } } },
+        ],
       },
     },
   ]);
-  const agg = rows[0];
-  const languages = (agg?.languages ?? []).filter((l): l is string => Boolean(l));
+  const facet = rows[0];
+  const totals = facet?.totals[0];
+  const languages = (facet?.langs ?? []).map((l) => ({ name: l._id, count: l.count }));
   await HunterModel.updateOne(
     { address: hunter },
     {
       $set: {
-        totalEarnedUsdc: agg ? agg.total.toString() : '0',
-        payoutCount: agg ? agg.payoutCount : 0,
-        reposContributed: agg ? agg.repos.filter(Boolean).length : 0,
+        totalEarnedUsdc: totals ? totals.total.toString() : '0',
+        payoutCount: totals ? totals.payoutCount : 0,
+        reposContributed: totals ? totals.repos.filter(Boolean).length : 0,
         languages,
       },
     },
