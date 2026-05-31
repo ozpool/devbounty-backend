@@ -10,6 +10,7 @@ import { authRouter } from './routes/auth.js';
 import { githubAuthRouter } from './routes/github.js';
 import { meRouter } from './routes/me.js';
 import { reposRouter } from './routes/repos.js';
+import { bountiesRouter } from './routes/bounties.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -64,6 +65,7 @@ export function createApp(): express.Application {
   app.use('/auth/github', githubAuthRouter);
   app.use('/me', meRouter);
   app.use('/repos', reposRouter);
+  app.use('/bounties', bountiesRouter);
 
   // ── Central error handler — MUST be last middleware ───────────────────────
   app.use(errorMiddleware);
