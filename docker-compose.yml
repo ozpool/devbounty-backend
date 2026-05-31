@@ -1,0 +1,39 @@
+# Local stack: MongoDB plus the two API entrypoints (HTTP API and indexer),
+# both built from the one Dockerfile. Secrets come from ./api/.env (gitignored;
+# see api/.env.example); MONGO_URI is overridden here to reach the mongo service.
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+
+  api:
+    build: .
+    command: node api/dist/index.js
+    restart: unless-stopped
+    env_file:
+      - ./api/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/devbounty
+    ports:
+      - '4000:4000'
+    depends_on:
+      - mongo
+
+  indexer:
+    build: .
+    command: node api/dist/indexer/index.js
+    restart: unless-stopped
+    env_file:
+      - ./api/.env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/devbounty
+    # Without ESCROW_ADDRESS the indexer logs that it has nothing to watch and exits.
+    depends_on:
+      - mongo
+
+volumes:
+  mongo-data:
