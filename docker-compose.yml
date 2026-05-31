@@ -5,8 +5,11 @@ services:
   mongo:
     image: mongo:7
     restart: unless-stopped
+    # Bound to loopback only: the api/indexer reach mongo over the compose network
+    # (mongodb://mongo:27017), so the host mapping is just for a local DB client and
+    # must not be exposed on all interfaces.
     ports:
-      - '27017:27017'
+      - '127.0.0.1:27017:27017'
     volumes:
       - mongo-data:/data/db
 

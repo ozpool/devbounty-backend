@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+# Read-only token: CI only builds and tests, it never writes to the repo.
+permissions:
+  contents: read
+
 jobs:
   api:
     runs-on: ubuntu-latest
@@ -45,4 +49,9 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npx commitlint --from origin/${{ github.base_ref }} --to HEAD
+      # Bind the PR base ref to an env var so the shell treats it as data, never
+      # as code (a crafted branch name must not be able to inject a command).
+      - name: commitlint
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: npx commitlint --from "origin/${BASE_REF}" --to HEAD
