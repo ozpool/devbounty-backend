@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument } from 'mongoose';
+import mongoose, { Schema, model, type HydratedDocument, type Model } from 'mongoose';
 
 // Source of truth for a hunter's payout history — one row per on-chain
 // BountyReleased event. Rows are immutable (insert-only), so there is no
@@ -36,7 +36,6 @@ reputationEventSchema.index({ hunterAddress: 1, createdAt: -1 });
 reputationEventSchema.index({ language: 1, createdAt: -1 });
 
 export type ReputationEventDocument = HydratedDocument<ReputationEvent>;
-export const ReputationEventModel = model<ReputationEvent>(
-  'ReputationEvent',
-  reputationEventSchema,
-);
+export const ReputationEventModel: Model<ReputationEvent> =
+  (mongoose.models.ReputationEvent as Model<ReputationEvent> | undefined) ??
+  model<ReputationEvent>('ReputationEvent', reputationEventSchema);

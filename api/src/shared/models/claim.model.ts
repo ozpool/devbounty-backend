@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument } from 'mongoose';
+import mongoose, { Schema, model, type HydratedDocument, type Model } from 'mongoose';
 
 // A claim is a soft, off-chain reservation of a bounty by a hunter.
 export type ClaimStatus = 'active' | 'expired' | 'submitted' | 'paid' | 'released';
@@ -56,4 +56,5 @@ claimSchema.index({ hunterAddress: 1, status: 1, expiresAt: 1 });
 claimSchema.index({ expiresAt: 1 });
 
 export type ClaimDocument = HydratedDocument<Claim>;
-export const ClaimModel = model<Claim>('Claim', claimSchema);
+export const ClaimModel: Model<Claim> =
+  (mongoose.models.Claim as Model<Claim> | undefined) ?? model<Claim>('Claim', claimSchema);

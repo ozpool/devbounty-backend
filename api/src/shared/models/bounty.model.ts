@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument } from 'mongoose';
+import mongoose, { Schema, model, type HydratedDocument, type Model } from 'mongoose';
 
 // Mirror of the on-chain escrow enum.
 export type OnChainStatus = 'None' | 'Open' | 'Paid' | 'Refunded';
@@ -99,4 +99,7 @@ bountySchema.index({ onChainStatus: 1, language: 1, createdAt: -1 });
 bountySchema.index({ maintainerAddress: 1, createdAt: -1 });
 
 export type BountyDocument = HydratedDocument<Bounty>;
-export const BountyModel = model<Bounty>('Bounty', bountySchema);
+// Reuse an already-compiled model so repeated imports (e.g. across test files
+// sharing one mongoose instance) don't throw OverwriteModelError.
+export const BountyModel: Model<Bounty> =
+  (mongoose.models.Bounty as Model<Bounty> | undefined) ?? model<Bounty>('Bounty', bountySchema);

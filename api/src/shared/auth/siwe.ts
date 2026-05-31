@@ -21,7 +21,12 @@ export async function verifySiwe(
   signature: `0x${string}`,
   expectedNonce: string,
 ): Promise<VerifiedSiwe> {
-  const fields = parseSiweMessage(message);
+  let fields: ReturnType<typeof parseSiweMessage>;
+  try {
+    fields = parseSiweMessage(message);
+  } catch {
+    throw new SiweError('Malformed SIWE message');
+  }
 
   if (!fields.address || !fields.domain || !fields.nonce) {
     throw new SiweError('Malformed SIWE message');
@@ -42,7 +47,12 @@ export async function verifySiwe(
     throw new SiweError('SIWE message not yet valid');
   }
 
-  const recovered = await recoverMessageAddress({ message, signature });
+  let recovered: Address;
+  try {
+    recovered = await recoverMessageAddress({ message, signature });
+  } catch {
+    throw new SiweError('Invalid signature');
+  }
   if (!isAddressEqual(recovered, fields.address)) {
     throw new SiweError('Signature does not match address');
   }
