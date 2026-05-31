@@ -12,6 +12,7 @@ import { meRouter } from './routes/me.js';
 import { reposRouter } from './routes/repos.js';
 import { bountiesRouter } from './routes/bounties.js';
 import { claimsRouter } from './routes/claims.js';
+import { huntersRouter, leaderboardRouter } from './routes/reputation.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -68,6 +69,8 @@ export function createApp(): express.Application {
   app.use('/repos', reposRouter);
   app.use('/bounties', bountiesRouter);
   app.use('/bounties', claimsRouter);
+  app.use('/hunters', huntersRouter);
+  app.use('/leaderboard', leaderboardRouter);
 
   // ── Central error handler — MUST be last middleware ───────────────────────
   app.use(errorMiddleware);
