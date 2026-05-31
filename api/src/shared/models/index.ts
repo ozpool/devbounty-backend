@@ -3,3 +3,4 @@ export * from './bounty.model.js';
 export * from './claim.model.js';
 export * from './hunter.model.js';
 export * from './reputationEvent.model.js';
+export * from './oauthToken.model.js';

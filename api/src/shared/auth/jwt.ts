@@ -45,3 +45,23 @@ export function readNonce(token: string): string {
   }
   return payload['nonce'];
 }
+
+const GH_STATE_TTL = '10m';
+
+/** Sign the GitHub OAuth `state`, binding the flow to the initiating wallet (CSRF guard). */
+export function signGithubState(address: string): string {
+  return jwt.sign({ address, typ: 'gh-oauth-state' }, env.JWT_SECRET, { expiresIn: GH_STATE_TTL });
+}
+
+/** Read and validate a GitHub OAuth state, returning the bound address. */
+export function readGithubState(token: string): string {
+  const payload = jwt.verify(token, env.JWT_SECRET);
+  if (
+    typeof payload === 'string' ||
+    payload['typ'] !== 'gh-oauth-state' ||
+    typeof payload['address'] !== 'string'
+  ) {
+    throw new Error('Invalid OAuth state');
+  }
+  return payload['address'];
+}

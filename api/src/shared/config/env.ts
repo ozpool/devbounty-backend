@@ -69,13 +69,22 @@ const encryptionEnv = z.object({
   ENC_KEY_V2: z.string().optional(),
 });
 
+const githubEnv = z.object({
+  // GitHub OAuth app credentials for account linking. The callback URL is derived
+  // from API_PUBLIC_BASE_URL.
+  GITHUB_OAUTH_CLIENT_ID: requiredInProd('test-github-client-id'),
+  GITHUB_OAUTH_CLIENT_SECRET: requiredInProd('test-github-client-secret'),
+  GITHUB_OAUTH_SCOPES: z.string().default('read:user repo'),
+});
+
 const schema = runtimeEnv
   .merge(databaseEnv)
   .merge(authEnv)
   .merge(chainEnv)
   .merge(servicesEnv)
   .merge(monitoringEnv)
-  .merge(encryptionEnv);
+  .merge(encryptionEnv)
+  .merge(githubEnv);
 
 export type Env = z.infer<typeof schema>;
 
