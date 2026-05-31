@@ -38,12 +38,22 @@ export async function withTimeout<T>(
   }
 }
 
-/** Ping MongoDB admin db — resolves to true on success. */
+/**
+ * Ping MongoDB admin db — resolves to true on success, false otherwise.
+ * Never throws: a disconnected client or a failed ping is reported as false so
+ * callers can treat the result as a plain health boolean.
+ */
 export async function pingDb(): Promise<boolean> {
-  const admin = mongoose.connection.db?.admin();
-  if (!admin) return false;
-  const result = (await admin.ping()) as { ok?: number };
-  return result.ok === 1;
+  // readyState 1 = connected; anything else means there is nothing to ping.
+  if (mongoose.connection.readyState !== 1) return false;
+  try {
+    const admin = mongoose.connection.db?.admin();
+    if (!admin) return false;
+    const result = (await admin.ping()) as { ok?: number };
+    return result.ok === 1;
+  } catch {
+    return false;
+  }
 }
 
 // Build a minimal viem publicClient from env. Full multi-provider chain config

@@ -35,8 +35,19 @@ export async function disconnectDb(): Promise<void> {
   logger.info('MongoDB disconnected cleanly');
 }
 
+// If draining hangs (a stuck keep-alive connection, a slow DB close), force the
+// process to exit rather than block the orchestrator's shutdown indefinitely.
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'Shutdown signal received — draining connections');
+
+  const forceTimer = setTimeout(() => {
+    logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'Shutdown timed out — forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  // Don't let this timer itself keep the event loop alive.
+  forceTimer.unref();
 
   await new Promise<void>((resolve) => {
     if (_server) {
@@ -47,6 +58,7 @@ async function shutdown(signal: string): Promise<void> {
   });
 
   await disconnectDb();
+  clearTimeout(forceTimer);
   process.exit(0);
 }
 

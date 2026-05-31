@@ -50,8 +50,9 @@ export function createApp(): express.Application {
   // does, @octokit/webhooks receives an untouched Buffer.
   app.use('/webhooks/github', express.raw({ type: 'application/json' }));
 
-  // JSON parser for all other routes
-  app.use(express.json());
+  // JSON parser for all other routes — only parse bodies that actually declare
+  // application/json, so a mislabelled or unexpected content type is left untouched.
+  app.use(express.json({ type: 'application/json' }));
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);
