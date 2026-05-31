@@ -13,6 +13,7 @@ import { reposRouter } from './routes/repos.js';
 import { bountiesRouter } from './routes/bounties.js';
 import { claimsRouter } from './routes/claims.js';
 import { huntersRouter, leaderboardRouter } from './routes/reputation.js';
+import { webhooksRouter } from './routes/webhooks.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -52,9 +53,9 @@ export function createApp(): express.Application {
 
   // ── Body parsers ──────────────────────────────────────────────────────────
   // /webhooks/github MUST receive the raw byte-exact body for HMAC verification.
-  // Mount express.raw() on that path BEFORE express.json() so it wins the route.
-  // The actual webhook handler ships in a later issue; this ensures that when it
-  // does, @octokit/webhooks receives an untouched Buffer.
+  // Mount express.raw() on that path BEFORE express.json() so it wins the route
+  // and the signed bytes reach the handler untouched (express.json then skips it
+  // because body-parser marks the request body as already read).
   app.use('/webhooks/github', express.raw({ type: 'application/json' }));
 
   // JSON parser for all other routes — only parse bodies that actually declare
@@ -71,6 +72,7 @@ export function createApp(): express.Application {
   app.use('/bounties', claimsRouter);
   app.use('/hunters', huntersRouter);
   app.use('/leaderboard', leaderboardRouter);
+  app.use('/webhooks/github', webhooksRouter);
 
   // ── Central error handler — MUST be last middleware ───────────────────────
   app.use(errorMiddleware);
