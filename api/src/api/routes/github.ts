@@ -1,4 +1,11 @@
-import { Router, type Request, type Response, type NextFunction } from 'express';
+import {
+  Router,
+  type Request,
+  type Response,
+  type NextFunction,
+  type CookieOptions,
+} from 'express';
+import { randomBytes } from 'crypto';
 import { z } from 'zod';
 import { env } from '../../shared/config/env.js';
 import { requireAuth, getAuth } from '../middleware/auth.js';
@@ -15,6 +22,20 @@ import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
 
+// Browser-bound CSRF nonce: set at /start, must match the state's nonce at /callback.
+const STATE_NONCE_COOKIE = 'gh_oauth_nonce';
+
+function nonceCookieOptions(): CookieOptions {
+  // SameSite=Lax so the cookie rides along on GitHub's top-level redirect back.
+  return {
+    httpOnly: true,
+    secure: env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 10 * 60 * 1000,
+  };
+}
+
 function isDuplicateKeyError(err: unknown): boolean {
   return (
     typeof err === 'object' &&
@@ -27,7 +48,9 @@ function isDuplicateKeyError(err: unknown): boolean {
 // GET /auth/github/start — redirect the logged-in wallet to GitHub's consent screen.
 router.get('/start', requireAuth, (req: Request, res: Response): void => {
   const { address } = getAuth(req);
-  res.redirect(buildAuthorizeUrl(signGithubState(address)));
+  const nonce = randomBytes(16).toString('hex');
+  res.cookie(STATE_NONCE_COOKIE, nonce, nonceCookieOptions());
+  res.redirect(buildAuthorizeUrl(signGithubState(address, nonce)));
 });
 
 const callbackQuery = z.object({ code: z.string().min(1), state: z.string().min(1) });
@@ -40,13 +63,22 @@ router.get('/callback', async (req: Request, res: Response, next: NextFunction):
     return;
   }
 
-  let address: string;
+  let state;
   try {
-    address = readGithubState(parsed.data.state);
+    state = readGithubState(parsed.data.state);
   } catch {
     next(AppError.unauthorized('Invalid or expired OAuth state'));
     return;
   }
+
+  // The finishing browser must be the one that started the flow.
+  const cookieNonce = req.cookies?.[STATE_NONCE_COOKIE] as string | undefined;
+  if (!cookieNonce || cookieNonce !== state.nonce) {
+    next(AppError.unauthorized('OAuth state does not match this browser session'));
+    return;
+  }
+  const address = state.address;
+  res.clearCookie(STATE_NONCE_COOKIE, { path: '/' });
 
   try {
     const { accessToken, scopes } = await exchangeCodeForToken(parsed.data.code);

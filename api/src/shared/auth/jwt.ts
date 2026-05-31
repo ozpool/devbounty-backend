@@ -48,20 +48,32 @@ export function readNonce(token: string): string {
 
 const GH_STATE_TTL = '10m';
 
-/** Sign the GitHub OAuth `state`, binding the flow to the initiating wallet (CSRF guard). */
-export function signGithubState(address: string): string {
-  return jwt.sign({ address, typ: 'gh-oauth-state' }, env.JWT_SECRET, { expiresIn: GH_STATE_TTL });
+export interface GithubState {
+  address: string;
+  nonce: string;
 }
 
-/** Read and validate a GitHub OAuth state, returning the bound address. */
-export function readGithubState(token: string): string {
+/**
+ * Sign the GitHub OAuth `state`. It carries the initiating wallet plus a nonce
+ * that must match an HttpOnly cookie set at /start, binding the callback to the
+ * same browser (CSRF guard).
+ */
+export function signGithubState(address: string, nonce: string): string {
+  return jwt.sign({ address, nonce, typ: 'gh-oauth-state' }, env.JWT_SECRET, {
+    expiresIn: GH_STATE_TTL,
+  });
+}
+
+/** Read and validate a GitHub OAuth state, returning the bound address and nonce. */
+export function readGithubState(token: string): GithubState {
   const payload = jwt.verify(token, env.JWT_SECRET);
   if (
     typeof payload === 'string' ||
     payload['typ'] !== 'gh-oauth-state' ||
-    typeof payload['address'] !== 'string'
+    typeof payload['address'] !== 'string' ||
+    typeof payload['nonce'] !== 'string'
   ) {
     throw new Error('Invalid OAuth state');
   }
-  return payload['address'];
+  return { address: payload['address'], nonce: payload['nonce'] };
 }

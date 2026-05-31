@@ -67,6 +67,15 @@ afterEach(async () => {
   await HunterModel.deleteMany({});
 });
 
+async function startLink(agent: ReturnType<typeof request.agent>): Promise<string> {
+  const start = await agent.get('/auth/github/start').set('Cookie', COOKIE);
+  expect(start.status).toBe(302);
+  const match = /[?&]state=([^&]+)/.exec(start.headers.location ?? '');
+  const state = match?.[1];
+  if (!state) throw new Error('no state in /start redirect');
+  return decodeURIComponent(state);
+}
+
 describe('GitHub OAuth linking', () => {
   it('redirects /auth/github/start to GitHub with a state', async () => {
     const res = await request(createApp()).get('/auth/github/start').set('Cookie', COOKIE);
@@ -82,8 +91,11 @@ describe('GitHub OAuth linking', () => {
 
   it('links the GitHub account on a valid callback', async () => {
     installFetchMock();
-    const state = signGithubState(ADDRESS);
-    const res = await request(createApp()).get(`/auth/github/callback?code=abc&state=${state}`);
+    const agent = request.agent(createApp());
+    const state = await startLink(agent);
+    const res = await agent.get(
+      `/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`,
+    );
     expect(res.status).toBe(302);
     expect(res.headers.location).toContain('github=linked');
 
@@ -100,12 +112,23 @@ describe('GitHub OAuth linking', () => {
     expect(res.status).toBe(401);
   });
 
+  it('rejects a callback whose state is not bound to this browser', async () => {
+    installFetchMock();
+    // Validly-signed state but no matching nonce cookie — the CSRF guard.
+    const state = signGithubState(ADDRESS, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    const res = await request(createApp()).get(
+      `/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`,
+    );
+    expect(res.status).toBe(401);
+  });
+
   it('lists only admin repos for a linked wallet', async () => {
     installFetchMock();
-    const state = signGithubState(ADDRESS);
-    await request(createApp()).get(`/auth/github/callback?code=abc&state=${state}`);
+    const agent = request.agent(createApp());
+    const state = await startLink(agent);
+    await agent.get(`/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`);
 
-    const res = await request(createApp()).get('/repos').set('Cookie', COOKIE);
+    const res = await agent.get('/repos').set('Cookie', COOKIE);
     expect(res.status).toBe(200);
     expect(res.body.repos).toHaveLength(1);
     expect(res.body.repos[0].fullName).toBe('octocat/admin-repo');
