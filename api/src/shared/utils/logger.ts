@@ -38,6 +38,11 @@ export const logger = pino({
       : undefined,
 });
 
+// Drop the query string — it can carry tokens or secrets we must not log.
+function pathOnly(url: string | undefined): string {
+  return (url ?? '').split('?')[0] ?? '';
+}
+
 /**
  * pino-http middleware. Attaches a child logger to req.log and propagates
  * x-request-id (generates a UUID if the header is absent).
@@ -50,8 +55,14 @@ export const httpLogger = pinoHttp({
     if (typeof existing === 'string' && existing.length > 0) return existing;
     return randomUUID();
   },
+  // Log the path without the query string in the request serializer.
+  serializers: {
+    req(req: IncomingMessage & { id?: string }) {
+      return { id: req.id ?? '', method: req.method ?? '', url: pathOnly(req.url) };
+    },
+  },
   customSuccessMessage(req: IncomingMessage, res: ServerResponse): string {
-    return `${req.method} ${req.url} ${res.statusCode}`;
+    return `${req.method} ${pathOnly(req.url)} ${res.statusCode}`;
   },
   // Don't escalate to error level for normal 4xx/5xx — warn is enough for clients
   customLogLevel(_req: IncomingMessage, res: ServerResponse, err?: Error): pino.LevelWithSilent {

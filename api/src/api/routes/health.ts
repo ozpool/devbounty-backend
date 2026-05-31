@@ -1,153 +1,71 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
+import { timingSafeEqual } from 'crypto';
 import mongoose from 'mongoose';
-import { createPublicClient, http, type PublicClient } from 'viem';
 import { env } from '../../shared/config/env.js';
 import { logger } from '../../shared/utils/logger.js';
 import { AppError } from '../../shared/utils/AppError.js';
+import {
+  runDependencyChecks,
+  sanitizeErrorMessage,
+  MONGO_STATE_NAMES,
+} from '../../shared/utils/healthChecks.js';
 
 const router = Router();
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── GET /health — liveness ──────────────────────────────────────────────────
+// Dependency-free on purpose: it answers instantly whether THIS process is alive,
+// touching no DB or RPC. A liveness probe must never flap because Mongo or the RPC
+// had a blip — that would kill a healthy instance. Readiness (which does check
+// dependencies) is a separate endpoint below.
+router.get('/', (_req: Request, res: Response): void => {
+  res.status(200).json({ ok: true, status: 'live', uptime: process.uptime() });
+});
 
-interface TimedSuccess<T> {
-  value: T;
-  ms: number;
-}
-interface TimedError {
-  error: string;
-  ms: number;
-}
-type TimedResult<T> = TimedSuccess<T> | TimedError;
-
-/** Race a promise against a timeout. Returns a timed error on timeout or rejection. */
-async function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  label: string,
-): Promise<TimedResult<T>> {
-  const start = Date.now();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-  });
-
+// ── GET /health/ready — readiness ───────────────────────────────────────────
+// Checks the dependencies this instance needs to serve traffic (DB + chain RPC).
+// Returns 503 if any is down so a load balancer can route around it.
+router.get('/ready', async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    const value = await Promise.race([promise, timeout]);
-    clearTimeout(timer);
-    return { value, ms: Date.now() - start };
-  } catch (err: unknown) {
-    clearTimeout(timer);
-    const message = err instanceof Error ? err.message : String(err);
-    return { error: message, ms: Date.now() - start };
-  }
-}
-
-/** Ping MongoDB admin db — resolves to true on success. */
-async function pingDb(): Promise<boolean> {
-  const admin = mongoose.connection.db?.admin();
-  if (!admin) return false;
-  const result = (await admin.ping()) as { ok?: number };
-  return result.ok === 1;
-}
-
-// Build a minimal viem publicClient from env. Full multi-provider chain config
-// lands in a later issue — this is a bootstrap client for health checks only.
-function buildPublicClient(): PublicClient | null {
-  if (!env.RPC_URL_HTTP) return null;
-  return createPublicClient({
-    transport: http(env.RPC_URL_HTTP),
-    chain: {
-      id: env.CHAIN_ID,
-      name: 'devbounty-chain',
-      nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-      rpcUrls: { default: { http: [env.RPC_URL_HTTP] } },
-    },
-  });
-}
-
-// mongoose readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
-const MONGO_STATE_NAMES: Record<number, string> = {
-  0: 'disconnected',
-  1: 'connected',
-  2: 'connecting',
-  3: 'disconnecting',
-};
-
-// ── GET /health ───────────────────────────────────────────────────────────────
-
-router.get('/', async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
-  try {
-    const [dbResult, chainResult] = await Promise.all([
-      withTimeout(pingDb(), 2000, 'db'),
-      (async (): Promise<TimedResult<bigint>> => {
-        const client = buildPublicClient();
-        if (!client) {
-          return { error: 'RPC_URL_HTTP not configured', ms: 0 };
-        }
-        return withTimeout(client.getBlockNumber(), 3000, 'chain');
-      })(),
-    ]);
-
+    const { dbResult, chainResult } = await runDependencyChecks();
     const dbOk = 'value' in dbResult && dbResult.value === true;
     const chainOk = 'value' in chainResult;
     const ok = dbOk && chainOk;
 
-    // indexerLag: not yet implemented (indexer is a later issue) — honestly null
-    const indexerLag: null = null;
-
     res.status(ok ? 200 : 503).json({
       ok,
-      db: dbOk
-        ? { status: 'ok', latencyMs: dbResult.ms }
-        : {
-            status: 'error',
-            error: 'error' in dbResult ? dbResult.error : 'ping failed',
-            latencyMs: dbResult.ms,
-          },
+      // Public endpoint: report status only, never the upstream error detail.
+      db: { status: dbOk ? 'ok' : 'error', latencyMs: dbResult.ms },
       chain: chainOk
         ? {
             status: 'ok',
-            blockNumber: (chainResult.value as bigint).toString(),
+            blockNumber: (chainResult as { value: bigint }).value.toString(),
             latencyMs: chainResult.ms,
           }
-        : {
-            status: 'error',
-            error: 'error' in chainResult ? chainResult.error : 'unknown',
-            latencyMs: chainResult.ms,
-          },
+        : { status: 'error', latencyMs: chainResult.ms },
       // Indexer lag tracking is wired when the indexer ships (later issue)
-      indexerLag,
+      indexerLag: null,
     });
   } catch (err: unknown) {
     next(err);
   }
 });
 
-// ── GET /health/internal ──────────────────────────────────────────────────────
-
+// ── GET /health/internal — full diagnostics, Bearer-token gated ─────────────
 router.get('/internal', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  // Bearer token auth — compare exact match (constant-time comparison not strictly
-  // needed here since timing attacks on health endpoints have no meaningful impact,
-  // but we avoid branching on the secret length just the same)
+  // Bearer token auth with constant-time comparison.
   const authHeader = req.headers['authorization'] ?? '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
-  if (!token || token !== env.INTERNAL_HEALTH_TOKEN) {
+  const provided = Buffer.from(token);
+  const expected = Buffer.from(env.INTERNAL_HEALTH_TOKEN);
+  const authorized = provided.length === expected.length && timingSafeEqual(provided, expected);
+  if (!authorized) {
     next(AppError.unauthorized('Invalid or missing internal health token'));
     return;
   }
 
   try {
-    const [dbResult, chainResult] = await Promise.all([
-      withTimeout(pingDb(), 2000, 'db'),
-      (async (): Promise<TimedResult<bigint>> => {
-        const client = buildPublicClient();
-        if (!client) return { error: 'RPC_URL_HTTP not configured', ms: 0 };
-        return withTimeout(client.getBlockNumber(), 3000, 'chain');
-      })(),
-    ]);
-
+    const { dbResult, chainResult } = await runDependencyChecks();
     const mongoState = mongoose.connection.readyState;
 
     logger.info('Internal health check requested');
@@ -162,14 +80,10 @@ router.get('/internal', async (req: Request, res: Response, next: NextFunction):
       },
       chain:
         'value' in chainResult
-          ? {
-              ok: true,
-              blockNumber: (chainResult.value as bigint).toString(),
-              latencyMs: chainResult.ms,
-            }
+          ? { ok: true, blockNumber: chainResult.value.toString(), latencyMs: chainResult.ms }
           : {
               ok: false,
-              error: 'error' in chainResult ? chainResult.error : 'unknown',
+              error: 'error' in chainResult ? sanitizeErrorMessage(chainResult.error) : 'unknown',
               latencyMs: chainResult.ms,
             },
       // Indexer state not yet implemented — null is honest
