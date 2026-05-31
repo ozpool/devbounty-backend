@@ -59,12 +59,22 @@ const monitoringEnv = z.object({
   SENTRY_DSN: z.string().optional(),
 });
 
+const encryptionEnv = z.object({
+  // Encryption at rest for tokens/secrets (AES-256-GCM). Keys are 32-byte values
+  // in hex. Versioning enables rotation: new writes use the active version; old
+  // blobs decrypt by the version stored alongside them.
+  ENC_ACTIVE_KEY_VERSION: z.string().default('v1'),
+  ENC_KEY_V1: requiredInProd('00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff'),
+  ENC_KEY_V2: z.string().optional(),
+});
+
 const schema = runtimeEnv
   .merge(databaseEnv)
   .merge(authEnv)
   .merge(chainEnv)
   .merge(servicesEnv)
-  .merge(monitoringEnv);
+  .merge(monitoringEnv)
+  .merge(encryptionEnv);
 
 export type Env = z.infer<typeof schema>;
 
