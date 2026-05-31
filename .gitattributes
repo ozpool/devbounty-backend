@@ -1,0 +1,8 @@
+# Normalize all text to LF in the repo (important for husky/CI shell scripts).
+* text=auto eol=lf
+
+# Binary-ish / generated — leave untouched
+*.png binary
+*.jpg binary
+*.ico binary
+package-lock.json -diff

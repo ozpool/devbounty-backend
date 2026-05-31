@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# coverage
+coverage/
+.nyc_output/
+
+# env — keep .env.example only
+.env
+.env.*
+!.env.example
+
+# hardhat
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+
+# logs / os
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# next (not used in backend, defensive)
+.next/

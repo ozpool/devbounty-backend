@@ -1,0 +1,4 @@
+# Repo-hygiene gate: block internal-only / unprofessional files.
+bash scripts/check-repo-hygiene.sh || exit 1
+
+npx --no-install lint-staged
