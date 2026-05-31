@@ -5,6 +5,7 @@ import { env } from '../config/env.js';
 // tag that makes any tampering fail closed on decrypt.
 const ALGORITHM = 'aes-256-gcm';
 const IV_BYTES = 12;
+const AUTH_TAG_BYTES = 16;
 const KEY_BYTES = 32;
 
 export interface EncryptedBlob {
@@ -68,4 +69,38 @@ export function decrypt(blob: EncryptedBlob): Buffer {
 
 export function decryptToString(blob: EncryptedBlob): string {
   return decrypt(blob).toString('utf8');
+}
+
+/**
+ * Encrypt and pack the result into a single Buffer laid out as
+ * iv(12) || authTag(16) || ciphertext. Use this when a model stores one Buffer
+ * column instead of three (e.g. a repo webhook secret). The key version is
+ * returned separately so the caller can persist it in its own column.
+ */
+export function encryptToBuffer(
+  plaintext: string | Buffer,
+  keyVersion: string = env.ENC_ACTIVE_KEY_VERSION,
+): { buffer: Buffer; keyVersion: string } {
+  const blob = encrypt(plaintext, keyVersion);
+  return {
+    buffer: Buffer.concat([blob.iv, blob.authTag, blob.ciphertext]),
+    keyVersion: blob.keyVersion,
+  };
+}
+
+/** Reverse encryptToBuffer using the key version stored alongside the buffer. */
+export function decryptFromBuffer(buffer: Buffer, keyVersion: string): Buffer {
+  if (buffer.length < IV_BYTES + AUTH_TAG_BYTES) {
+    throw new Error('Encrypted buffer is too short to hold an iv and auth tag');
+  }
+  return decrypt({
+    iv: buffer.subarray(0, IV_BYTES),
+    authTag: buffer.subarray(IV_BYTES, IV_BYTES + AUTH_TAG_BYTES),
+    ciphertext: buffer.subarray(IV_BYTES + AUTH_TAG_BYTES),
+    keyVersion,
+  });
+}
+
+export function decryptFromBufferToString(buffer: Buffer, keyVersion: string): string {
+  return decryptFromBuffer(buffer, keyVersion).toString('utf8');
 }
