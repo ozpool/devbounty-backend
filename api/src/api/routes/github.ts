@@ -83,6 +83,17 @@ router.get('/callback', async (req: Request, res: Response, next: NextFunction):
   try {
     const { accessToken, scopes } = await exchangeCodeForToken(parsed.data.code);
     const ghUser = await fetchGitHubUser(accessToken);
+
+    // Refuse to re-point an existing GitHub identity at a different wallet. Without
+    // this, wallet B could link GitHub account X that wallet A already owns, moving
+    // linkedAddress A->B while A's hunter doc keeps the same githubUserId — two
+    // wallets bound to one GitHub id, breaking the 1:1 binding the Sybil gate needs.
+    const existingLink = await OAuthTokenModel.findOne({ githubUserId: ghUser.id }).lean();
+    if (existingLink?.linkedAddress && existingLink.linkedAddress !== address) {
+      next(AppError.conflict('This GitHub account is already linked to a different wallet'));
+      return;
+    }
+
     const blob = encrypt(accessToken);
 
     await OAuthTokenModel.updateOne(

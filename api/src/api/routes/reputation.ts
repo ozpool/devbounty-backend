@@ -62,10 +62,29 @@ interface LeaderboardRow {
 }
 
 // Short-lived cache; the indexer will also invalidate on payout events (later issue).
+// Bounded so an attacker can't grow it without limit via distinct ?lang= values
+// (each distinct key was both a cache entry that was never evicted and a cache
+// miss that re-ran the aggregation — an OOM + DB-load amplification vector).
 const cache = new Map<string, { at: number; rows: LeaderboardRow[] }>();
+const CACHE_MAX_ENTRIES = 200;
+
+function cacheStore(key: string, rows: LeaderboardRow[], at: number): void {
+  // Evict the oldest entry (Map preserves insertion order) when full.
+  if (cache.size >= CACHE_MAX_ENTRIES && !cache.has(key)) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, { at, rows });
+}
 
 const leaderboardQuery = z.object({
-  lang: z.string().optional(),
+  // Constrain lang to a sane shape (length + charset) so it can't be used as an
+  // unbounded cache-key/agg-key generator. Language tags are short identifiers.
+  lang: z
+    .string()
+    .max(40)
+    .regex(/^[A-Za-z0-9+#.\- ]+$/, 'invalid language')
+    .optional(),
   window: z.enum(['30d', 'all']).optional(),
 });
 
@@ -119,7 +138,7 @@ leaderboardRouter.get('/', async (req: Request, res: Response, next: NextFunctio
       return;
     }
     const rows = await computeLeaderboard(lang, window);
-    cache.set(key, { at: Date.now(), rows });
+    cacheStore(key, rows, Date.now());
     res.json({ window, lang: lang ?? null, items: rows, cached: false });
   } catch (err: unknown) {
     next(err);
