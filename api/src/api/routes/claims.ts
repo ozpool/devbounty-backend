@@ -18,7 +18,17 @@ const router = Router();
 const CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7-day soft reservation
 const ACTIVE_CLAIM_CAP = 3; // per-wallet Sybil cap
 const COOLDOWN_MS = 24 * 60 * 60 * 1000; // re-claim cooldown after a claim ends
-const TERMINAL = new Set(['paid', 'refunded', 'releasing', 'release_failed']);
+// Not claimable: an unfunded bounty (pending_deposit) or a cancelled one, plus
+// the terminal/in-flight payout states. Note 'submitted' IS still claimable on
+// purpose — multiple hunters may file competing PRs and the first merge wins.
+const NOT_CLAIMABLE = new Set([
+  'pending_deposit',
+  'cancelled',
+  'releasing',
+  'paid',
+  'refunded',
+  'release_failed',
+]);
 
 function isDuplicateKeyError(err: unknown): boolean {
   return (
@@ -39,7 +49,7 @@ router.post('/:id/claim', requireAuth, async (req: Request, res: Response, next:
       next(AppError.notFound('Bounty not found'));
       return;
     }
-    if (TERMINAL.has(bounty.lifecycleStatus)) {
+    if (NOT_CLAIMABLE.has(bounty.lifecycleStatus)) {
       next(AppError.conflict('Bounty is not claimable'));
       return;
     }
@@ -78,7 +88,25 @@ router.post('/:id/claim', requireAuth, async (req: Request, res: Response, next:
     }
 
     const expiresAt = new Date(now + CLAIM_TTL_MS);
-    await ClaimModel.create({ bountyId, hunterAddress: address, status: 'active', expiresAt });
+    const created = await ClaimModel.create({
+      bountyId,
+      hunterAddress: address,
+      status: 'active',
+      expiresAt,
+    });
+    // The pre-check above is racy: two concurrent claims on different bounties
+    // can both read activeCount < cap and both insert. Re-count after inserting
+    // and roll back our own row if that pushed the wallet over the cap. This can
+    // only ever over-reject (a loser retries), never let the cap be exceeded.
+    const activeAfter = await ClaimModel.countDocuments({
+      hunterAddress: address,
+      status: 'active',
+    });
+    if (activeAfter > ACTIVE_CLAIM_CAP) {
+      await ClaimModel.deleteOne({ _id: created._id });
+      next(AppError.conflict('Active claim cap reached'));
+      return;
+    }
     bounty.lifecycleStatus = 'claimed';
     await bounty.save();
     await writeAudit({
@@ -141,11 +169,21 @@ router.post('/:id/submit', requireAuth, async (req: Request, res: Response, next
   const { address } = getAuth(req);
   const bountyId = req.params.id;
   const prUrl = parsed.data.prUrl;
+  // The zod regex guarantees this shape, so the capture always succeeds.
+  const prParts = prUrl.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)$/);
+  const prRepoFullName = prParts ? `${prParts[1]}/${prParts[2]}` : '';
   const prNumber = Number(prUrl.split('/').pop());
   try {
     const bounty = await BountyModel.findOne({ bountyId }).lean();
     if (!bounty) {
       next(AppError.notFound('Bounty not found'));
+      return;
+    }
+    // The PR must live in the bounty's own repo. Without this, a hunter could
+    // submit an unrelated repo's PR whose number later collides with a real PR
+    // in the bounty repo and settles the bounty on merge.
+    if (prRepoFullName.toLowerCase() !== bounty.repo.fullName.toLowerCase()) {
+      next(AppError.badRequest('The pull request must belong to the bounty repository'));
       return;
     }
     const claim = await ClaimModel.findOne({ bountyId, hunterAddress: address, status: 'active' });

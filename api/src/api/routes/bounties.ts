@@ -13,6 +13,7 @@ import { writeAudit } from '../../shared/audit/writeAudit.js';
 import {
   isIndexerConfigured,
   getOnChainBountyStatus,
+  verifyEscrowEventTx,
   ON_CHAIN_STATUS_NONE,
 } from '../../shared/chain/clients.js';
 import { AppError } from '../../shared/utils/AppError.js';
@@ -22,6 +23,13 @@ const router = Router();
 const DEFAULT_REFUND_WINDOW_SECONDS = 14 * 24 * 60 * 60; // mirrors the on-chain default later
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+
+// Lifecycle states where a hunter has accepted work in flight or a payout has
+// started/finished, so recording a refund would strand or contradict that.
+const NON_REFUNDABLE_LIFECYCLE = new Set(['submitted', 'releasing', 'release_failed', 'paid']);
+
+// States where an on-chain action is awaiting indexer confirmation.
+const PENDING_CONFIRMATION = new Set(['pending_deposit', 'releasing']);
 
 // Explicit safelist — internal fields (_id, __v) never reach the client.
 function toBountyDto(b: Bounty) {
@@ -36,6 +44,10 @@ function toBountyDto(b: Bounty) {
     language: b.language,
     onChainStatus: b.onChainStatus,
     lifecycleStatus: b.lifecycleStatus,
+    // A hint for the UI that an on-chain action is still being confirmed by the
+    // indexer (deposit not yet 'open', or a sent payout not yet 'paid'), so it can
+    // show a "confirming…" state instead of looking stuck or finished.
+    pendingConfirmation: PENDING_CONFIRMATION.has(b.lifecycleStatus),
     refundWindowSnapshot: b.refundWindowSnapshot,
     hunterAddress: b.hunterAddress ?? null,
     createdAt: b.createdAt ?? null,
@@ -77,20 +89,48 @@ router.post(
     const { address } = getAuth(req);
     const idemKey = req.header('Idempotency-Key');
 
-    try {
-      if (idemKey) {
-        // Scope the replay lookup to the caller so one user can't probe another
-        // user's request by guessing their Idempotency-Key.
-        const prior = await IdempotencyKeyModel.findOne({ key: idemKey, actor: address }).lean();
-        if (prior) {
-          res.status(prior.responseStatus).json(prior.responseBody);
+    // Reserve the (key, actor) row BEFORE doing any work. Because deriveBountyId
+    // uses a random nonce, two concurrent requests with the same key would
+    // otherwise each mint a different bounty. The unique (key, actor) index lets
+    // exactly one request win the reservation; the loser replays the winner's
+    // stored response (or, if the winner is still in flight, is told to retry).
+    let reserved = false;
+    if (idemKey) {
+      const prior = await IdempotencyKeyModel.findOne({ key: idemKey, actor: address }).lean();
+      if (prior) {
+        replayOrConflict(res, next, prior);
+        return;
+      }
+      try {
+        await IdempotencyKeyModel.create({
+          key: idemKey,
+          route: 'POST /bounties',
+          actor: address,
+          responseStatus: 0,
+          responseBody: null,
+        });
+        reserved = true;
+      } catch (err: unknown) {
+        if (isDuplicateKeyError(err)) {
+          const winner = await IdempotencyKeyModel.findOne({
+            key: idemKey,
+            actor: address,
+          }).lean();
+          replayOrConflict(res, next, winner);
           return;
         }
+        next(err);
+        return;
       }
+    }
 
+    try {
       const body = parsed.data;
       const [owner, name] = body.repoFullName.split('/');
       if (!owner || !name) {
+        if (reserved && idemKey) {
+          await IdempotencyKeyModel.deleteOne({ key: idemKey, actor: address });
+        }
         next(AppError.badRequest('Invalid repo name'));
         return;
       }
@@ -112,20 +152,47 @@ router.post(
 
       const responseBody = { bountyId, lifecycleStatus: 'pending_deposit' as const };
       if (idemKey) {
-        await IdempotencyKeyModel.create({
-          key: idemKey,
-          route: 'POST /bounties',
-          actor: address,
-          responseStatus: 201,
-          responseBody,
-        });
+        // Finalize the reservation with the real response so a retry replays it.
+        await IdempotencyKeyModel.updateOne(
+          { key: idemKey, actor: address },
+          { $set: { responseStatus: 201, responseBody } },
+        );
       }
       res.status(201).json(responseBody);
     } catch (err: unknown) {
+      // The work failed after reserving — release the reservation so the client
+      // can retry instead of being stuck on a permanent "in progress".
+      if (reserved && idemKey) {
+        await IdempotencyKeyModel.deleteOne({ key: idemKey, actor: address }).catch(
+          () => undefined,
+        );
+      }
       next(err);
     }
   },
 );
+
+// Replay a finalized idempotency record, or report still-in-flight as a conflict.
+function replayOrConflict(
+  res: Response,
+  next: NextFunction,
+  record: { responseStatus: number; responseBody: unknown } | null,
+): void {
+  if (record && record.responseStatus > 0) {
+    res.status(record.responseStatus).json(record.responseBody);
+    return;
+  }
+  next(AppError.conflict('A request with this Idempotency-Key is already in progress'));
+}
+
+function isDuplicateKeyError(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === 11000
+  );
+}
 
 const listQuery = z.object({
   status: z.string().optional(),
@@ -272,6 +339,29 @@ router.post(
         res.json({ bountyId: bounty.bountyId, status: 'refunded', alreadyRecorded: true });
         return;
       }
+      // A bounty with a live submission or an in-flight/finished payout must never
+      // be flipped to 'refunded' — that would let a maintainer dodge a hunter
+      // whose PR is already submitted or merged. Refunds are only legitimate while
+      // the bounty is still open/claimed (funded, no accepted work).
+      if (NON_REFUNDABLE_LIFECYCLE.has(bounty.lifecycleStatus)) {
+        next(AppError.conflict('Bounty has an active submission or payout and cannot be refunded'));
+        return;
+      }
+      // When an escrow is configured, don't trust the caller's hash — confirm the
+      // refund tx is mined, succeeded, and targets the escrow. With no escrow
+      // (testnet/dev without payout) there is nothing to verify against, so the
+      // maintainer-authenticated record is accepted as-is.
+      if (isIndexerConfigured()) {
+        const verified = await verifyEscrowEventTx(
+          parsed.data.txHash as `0x${string}`,
+          'BountyRefunded',
+          bounty.bountyId,
+        );
+        if (!verified) {
+          next(AppError.badRequest('Refund transaction could not be verified on chain'));
+          return;
+        }
+      }
       bounty.onChainStatus = 'Refunded';
       bounty.lifecycleStatus = 'refunded';
       bounty.txRefund = parsed.data.txHash;
@@ -284,6 +374,73 @@ router.post(
         ip: req.ip,
       });
       res.json({ bountyId: bounty.bountyId, status: 'refunded' });
+    } catch (err: unknown) {
+      next(err);
+    }
+  },
+);
+
+const depositRecordedBody = z.object({ txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/) });
+
+// POST /bounties/:id/deposit-recorded — the frontend tells us the maintainer's
+// funding tx landed, so the bounty leaves 'pending_deposit' and reaches the board
+// immediately instead of waiting on the indexer. The indexer remains the
+// canonical source and converges to the same state; this is just a fast-path.
+// Idempotent: once 'open' (or any later state), a repeat is a safe no-op.
+router.post(
+  '/:id/deposit-recorded',
+  requireAuth,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const parsed = depositRecordedBody.safeParse(req.body);
+    if (!parsed.success) {
+      next(AppError.badRequest('Invalid deposit payload'));
+      return;
+    }
+    const { address } = getAuth(req);
+    try {
+      const bounty = await BountyModel.findOne({ bountyId: req.params.id });
+      if (!bounty) {
+        next(AppError.notFound('Bounty not found'));
+        return;
+      }
+      if (bounty.maintainerAddress !== address) {
+        next(AppError.forbidden('Only the bounty maintainer can record a deposit'));
+        return;
+      }
+      // Already past pending_deposit (indexer beat us, or duplicate call) — no-op.
+      if (bounty.lifecycleStatus !== 'pending_deposit') {
+        res.json({
+          bountyId: bounty.bountyId,
+          status: bounty.lifecycleStatus,
+          alreadyRecorded: true,
+        });
+        return;
+      }
+      // With an escrow configured, confirm the funding tx really created THIS
+      // bounty on chain before trusting it; otherwise accept the maintainer record.
+      if (isIndexerConfigured()) {
+        const verified = await verifyEscrowEventTx(
+          parsed.data.txHash as `0x${string}`,
+          'BountyCreated',
+          bounty.bountyId,
+        );
+        if (!verified) {
+          next(AppError.badRequest('Deposit transaction could not be verified on chain'));
+          return;
+        }
+      }
+      bounty.onChainStatus = 'Open';
+      bounty.lifecycleStatus = 'open';
+      bounty.txCreate = parsed.data.txHash;
+      await bounty.save();
+      await writeAudit({
+        action: 'bounty.deposit_recorded',
+        actor: getAuth(req),
+        target: { type: 'bounty', id: bounty.bountyId },
+        metadata: { txHash: parsed.data.txHash },
+        ip: req.ip,
+      });
+      res.json({ bountyId: bounty.bountyId, status: 'open' });
     } catch (err: unknown) {
       next(err);
     }

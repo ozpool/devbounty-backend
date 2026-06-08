@@ -4,17 +4,27 @@ import { AppError } from '../../shared/utils/AppError.js';
 import { verifyWebhookSignature } from '../../shared/github/webhook.js';
 import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
 import { writeAudit } from '../../shared/audit/writeAudit.js';
-import { ClaimModel, RepoModel, WebhookDeliveryModel } from '../../shared/models/index.js';
+import {
+  ClaimModel,
+  HunterModel,
+  RepoModel,
+  WebhookDeliveryModel,
+} from '../../shared/models/index.js';
 
 const router = Router();
 
-// Shape of the slice of a pull_request payload we actually read.
+// Shape of the slice of a pull_request payload we actually read. Every field here
+// is GitHub-attested: the body is HMAC-verified against the repo's webhook secret
+// before we parse it, so base/default_branch/author can be trusted as authoritative.
 interface PullRequestPayload {
   action?: string;
+  repository?: { default_branch?: string };
   pull_request?: {
     number?: number;
     merged?: boolean;
     merge_commit_sha?: string | null;
+    base?: { ref?: string; repo?: { id?: number } };
+    user?: { login?: string };
   };
 }
 
@@ -109,6 +119,32 @@ async function processDelivery(
     status: 'submitted',
   });
   if (!claim) return { matched: false };
+
+  // Authorization. A verified signature only proves GitHub sent this delivery —
+  // not that the merge is a legitimate completion of THIS bounty. Before paying
+  // out we require all three to hold, every value GitHub-attested in the signed
+  // body: (1) the PR's base repo is the bounty's repo, (2) it was merged into
+  // that repo's default branch (not some unprotected side branch the hunter can
+  // self-merge), and (3) the PR was authored by the hunter who holds the claim.
+  // Any failure ignores the delivery; the maintainer can still manual-release.
+  const baseRepoId = pr.base?.repo?.id;
+  if (baseRepoId !== githubRepoId) return { ignored: 'pr base repo does not match bounty repo' };
+
+  const defaultBranch = payload.repository?.default_branch;
+  const baseRef = pr.base?.ref;
+  if (!defaultBranch || !baseRef || baseRef !== defaultBranch) {
+    return { ignored: 'pr not merged into the default branch' };
+  }
+
+  const hunter = await HunterModel.findOne({ address: claim.hunterAddress }).lean();
+  const prAuthor = pr.user?.login;
+  if (
+    !hunter?.githubLogin ||
+    !prAuthor ||
+    prAuthor.toLowerCase() !== hunter.githubLogin.toLowerCase()
+  ) {
+    return { ignored: 'pr author is not the claiming hunter' };
+  }
 
   const mergeCommitSha = typeof pr.merge_commit_sha === 'string' ? pr.merge_commit_sha : undefined;
 

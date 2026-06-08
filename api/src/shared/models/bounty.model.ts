@@ -40,6 +40,7 @@ export interface Bounty {
   txRefund?: string;
   hunterAddress?: string; // set on release
   releasedPrCommitSha?: string;
+  releaseAttempts?: number; // on-chain release retries; capped so a permanent failure stops
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -92,6 +93,7 @@ const bountySchema = new Schema<Bounty>(
     txRefund: { type: String },
     hunterAddress: { type: String, index: true },
     releasedPrCommitSha: { type: String },
+    releaseAttempts: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
