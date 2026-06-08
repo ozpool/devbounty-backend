@@ -17,7 +17,7 @@ process.env['MONGO_URI'] = mongod.getUri();
 
 const { createApp } = await import('../api/app.js');
 const { signSession } = await import('../shared/auth/jwt.js');
-const { BountyModel, IdempotencyKeyModel } = await import('../shared/models/index.js');
+const { BountyModel, ClaimModel, IdempotencyKeyModel } = await import('../shared/models/index.js');
 
 const ADDRESS = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const COOKIE = `devbounty_jwt=${signSession({ sub: ADDRESS, role: 'hunter' })}`;
@@ -46,6 +46,7 @@ afterAll(async () => {
 
 afterEach(async () => {
   await BountyModel.deleteMany({});
+  await ClaimModel.deleteMany({});
   await IdempotencyKeyModel.deleteMany({});
 });
 
@@ -130,5 +131,42 @@ describe('bounties', () => {
   it('returns 404 for an unknown bounty', async () => {
     const res = await request(createApp()).get('/bounties/0xdeadbeef');
     expect(res.status).toBe(404);
+  });
+
+  it('returns public claims on bounty detail', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const id = create.body.bountyId as string;
+    await ClaimModel.create({
+      bountyId: id,
+      hunterAddress: ADDRESS,
+      status: 'submitted',
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      prUrl: 'https://github.com/octocat/hello/pull/9',
+      prNumber: 9,
+    });
+
+    const detail = await request(app).get(`/bounties/${id}`);
+    expect(detail.body.claims).toHaveLength(1);
+    expect(detail.body.claims[0].hunterAddress).toBe(ADDRESS);
+    expect(detail.body.claims[0].status).toBe('submitted');
+    expect(detail.body.claims[0].prNumber).toBe(9);
+  });
+
+  it('filters by minAmount numerically, not lexicographically', async () => {
+    const app = createApp();
+    await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .send(validBounty({ amountUsdc: '9', issueNumber: 1 }));
+    await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .send(validBounty({ amountUsdc: '500', issueNumber: 2 }));
+
+    // Lexicographically '9' > '50', so a string compare would wrongly keep it.
+    const res = await request(app).get('/bounties?minAmount=50');
+    expect(res.body.total).toBe(1);
+    expect(res.body.items[0].amountUsdc).toBe('500');
   });
 });

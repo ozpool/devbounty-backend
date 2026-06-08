@@ -6,6 +6,7 @@ import {
   ClaimModel,
   IdempotencyKeyModel,
   type Bounty,
+  type Claim,
 } from '../../shared/models/index.js';
 import { deriveBountyId } from '../../shared/bounty/bountyId.js';
 import { writeAudit } from '../../shared/audit/writeAudit.js';
@@ -33,6 +34,18 @@ function toBountyDto(b: Bounty) {
     refundWindowSnapshot: b.refundWindowSnapshot,
     hunterAddress: b.hunterAddress ?? null,
     createdAt: b.createdAt ?? null,
+  };
+}
+
+// Public claim view — only the fields the board/detail UI needs.
+function toPublicClaim(c: Claim) {
+  return {
+    hunterAddress: c.hunterAddress,
+    status: c.status,
+    expiresAt: c.expiresAt ?? null,
+    prUrl: c.prUrl ?? null,
+    prNumber: c.prNumber ?? null,
+    createdAt: c.createdAt ?? null,
   };
 }
 
@@ -111,6 +124,7 @@ const listQuery = z.object({
   status: z.string().optional(),
   language: z.string().optional(),
   repo: z.string().optional(),
+  minAmount: z.coerce.number().nonnegative().optional(),
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).optional(),
 });
@@ -127,6 +141,13 @@ router.get('/', async (req: Request, res: Response, next: NextFunction): Promise
   if (q.status) filter['lifecycleStatus'] = q.status;
   if (q.language) filter['language'] = q.language;
   if (q.repo) filter['repo.fullName'] = q.repo;
+  // amountUsdc is a decimal string, so compare numerically via $toDecimal
+  // rather than lexicographically ('9' would otherwise outrank '500').
+  if (q.minAmount !== undefined) {
+    filter['$expr'] = {
+      $gte: [{ $toDecimal: '$amountUsdc' }, { $toDecimal: String(q.minAmount) }],
+    };
+  }
   const page = q.page ?? 1;
   const pageSize = q.pageSize ?? DEFAULT_PAGE_SIZE;
 
@@ -153,7 +174,13 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction): Prom
       next(AppError.notFound('Bounty not found'));
       return;
     }
-    res.json({ ...toBountyDto(bounty), claims: [] }); // claims are populated in the claim flow (#8)
+    const claims = await ClaimModel.find({
+      bountyId: bounty.bountyId,
+      status: { $in: ['active', 'submitted', 'paid'] },
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ ...toBountyDto(bounty), claims: claims.map(toPublicClaim) });
   } catch (err: unknown) {
     next(err);
   }

@@ -38,6 +38,7 @@ huntersRouter.get('/:address', async (req: Request, res: Response, next: NextFun
       reposContributed: hunter.reposContributed,
       languages: hunter.languages,
       recentPayouts: recent.map((e) => ({
+        bountyId: e.bountyId,
         amountUsdc: e.amountUsdc,
         repoFullName: e.repoFullName,
         language: e.language ?? null,
@@ -53,7 +54,9 @@ huntersRouter.get('/:address', async (req: Request, res: Response, next: NextFun
 });
 
 interface LeaderboardRow {
-  hunterAddress: string;
+  rank: number;
+  address: string;
+  githubLogin: string | null;
   totalEarnedUsdc: string;
   payoutCount: number;
 }
@@ -73,7 +76,7 @@ async function computeLeaderboard(
   const match: Record<string, unknown> = { type: 'payout' };
   if (lang) match['language'] = lang;
   if (window === '30d') match['createdAt'] = { $gte: new Date(Date.now() - WINDOW_30D_MS) };
-  return ReputationEventModel.aggregate<LeaderboardRow>([
+  const rows = await ReputationEventModel.aggregate<Omit<LeaderboardRow, 'rank'>>([
     { $match: match },
     {
       $group: {
@@ -84,15 +87,19 @@ async function computeLeaderboard(
     },
     { $sort: { total: -1 } },
     { $limit: LEADERBOARD_LIMIT },
+    { $lookup: { from: 'hunters', localField: '_id', foreignField: 'address', as: 'hunter' } },
     {
       $project: {
         _id: 0,
-        hunterAddress: '$_id',
+        address: '$_id',
+        githubLogin: { $ifNull: [{ $arrayElemAt: ['$hunter.githubLogin', 0] }, null] },
         totalEarnedUsdc: { $toString: '$total' },
         payoutCount: 1,
       },
     },
   ]);
+  // Rank is positional over the total-desc sort above.
+  return rows.map((row, i) => ({ rank: i + 1, ...row }));
 }
 
 // GET /leaderboard?lang&window=30d|all — top hunters by USDC earned.
