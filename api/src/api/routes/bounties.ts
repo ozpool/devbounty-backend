@@ -1,7 +1,12 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { requireAuth, getAuth } from '../middleware/auth.js';
-import { BountyModel, IdempotencyKeyModel, type Bounty } from '../../shared/models/index.js';
+import {
+  BountyModel,
+  ClaimModel,
+  IdempotencyKeyModel,
+  type Bounty,
+} from '../../shared/models/index.js';
 import { deriveBountyId } from '../../shared/bounty/bountyId.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
@@ -152,5 +157,90 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction): Prom
     next(err);
   }
 });
+
+// GET /bounties/:id/refund-eligibility — a UX convenience for the maintainer's
+// refund CTA. The chain is canonical; this just answers, from off-chain state,
+// whether a refund would currently be allowed and when the window opens.
+router.get(
+  '/:id/refund-eligibility',
+  requireAuth,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const { address } = getAuth(req);
+    try {
+      const bounty = await BountyModel.findOne({ bountyId: req.params.id }).lean();
+      if (!bounty) {
+        next(AppError.notFound('Bounty not found'));
+        return;
+      }
+      if (bounty.maintainerAddress !== address) {
+        next(AppError.forbidden('Only the bounty maintainer can refund this bounty'));
+        return;
+      }
+      const windowExpiresAt = bounty.createdAt
+        ? new Date(bounty.createdAt.getTime() + bounty.refundWindowSnapshot * 1000)
+        : null;
+      const locked = await ClaimModel.exists({
+        bountyId: bounty.bountyId,
+        status: { $in: ['active', 'submitted'] },
+      });
+
+      let eligible = false;
+      let reason: string;
+      if (bounty.onChainStatus !== 'Open') {
+        reason = 'Bounty is not open on chain';
+      } else if (locked) {
+        reason = 'An active claim or submission is in progress';
+      } else if (!windowExpiresAt || Date.now() < windowExpiresAt.getTime()) {
+        reason = 'The refund window has not elapsed yet';
+      } else {
+        eligible = true;
+        reason = 'Eligible to refund';
+      }
+      res.json({ eligible, reason, windowExpiresAt });
+    } catch (err: unknown) {
+      next(err);
+    }
+  },
+);
+
+const refundRecordedBody = z.object({ txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/) });
+
+// POST /bounties/:id/refund-recorded — the frontend tells us the maintainer's
+// refund tx landed, so status flips immediately instead of waiting on the indexer.
+// Idempotent on txHash: a repeat (or the indexer arriving first) is a safe no-op.
+router.post(
+  '/:id/refund-recorded',
+  requireAuth,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const parsed = refundRecordedBody.safeParse(req.body);
+    if (!parsed.success) {
+      next(AppError.badRequest('Invalid refund payload'));
+      return;
+    }
+    const { address } = getAuth(req);
+    try {
+      const bounty = await BountyModel.findOne({ bountyId: req.params.id });
+      if (!bounty) {
+        next(AppError.notFound('Bounty not found'));
+        return;
+      }
+      if (bounty.maintainerAddress !== address) {
+        next(AppError.forbidden('Only the bounty maintainer can refund this bounty'));
+        return;
+      }
+      if (bounty.lifecycleStatus === 'refunded') {
+        res.json({ bountyId: bounty.bountyId, status: 'refunded', alreadyRecorded: true });
+        return;
+      }
+      bounty.onChainStatus = 'Refunded';
+      bounty.lifecycleStatus = 'refunded';
+      bounty.txRefund = parsed.data.txHash;
+      await bounty.save();
+      res.json({ bountyId: bounty.bountyId, status: 'refunded' });
+    } catch (err: unknown) {
+      next(err);
+    }
+  },
+);
 
 export { router as bountiesRouter };

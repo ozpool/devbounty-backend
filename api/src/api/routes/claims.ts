@@ -1,7 +1,15 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { requireAuth, getAuth } from '../middleware/auth.js';
-import { BountyModel, ClaimModel, HunterModel } from '../../shared/models/index.js';
+import {
+  BountyModel,
+  ClaimModel,
+  HunterModel,
+  OAuthTokenModel,
+} from '../../shared/models/index.js';
+import { decryptToString } from '../../shared/crypto/tokenCrypto.js';
+import { fetchPullRequest, GithubError } from '../../shared/github/oauth.js';
+import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -153,5 +161,70 @@ router.post('/:id/submit', requireAuth, async (req: Request, res: Response, next
     next(err);
   }
 });
+
+// POST /bounties/:id/manual-release — the maintainer's fallback for when the
+// merge webhook never arrived (GitHub outage, webhook disabled): confirm the PR
+// merge directly with GitHub using the maintainer's own token, then settle the
+// bounty through the same path the webhook uses.
+router.post(
+  '/:id/manual-release',
+  requireAuth,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const { address } = getAuth(req);
+    const bountyId = req.params.id;
+    if (typeof bountyId !== 'string') {
+      next(AppError.badRequest('Invalid bounty id'));
+      return;
+    }
+    try {
+      const bounty = await BountyModel.findOne({ bountyId }).lean();
+      if (!bounty) {
+        next(AppError.notFound('Bounty not found'));
+        return;
+      }
+      if (bounty.maintainerAddress !== address) {
+        next(AppError.forbidden('Only the bounty maintainer can release this bounty'));
+        return;
+      }
+      const claim = await ClaimModel.findOne({ bountyId, status: 'submitted' }).lean();
+      if (!claim || typeof claim.prNumber !== 'number') {
+        next(AppError.conflict('No submitted pull request to release for this bounty'));
+        return;
+      }
+
+      const link = await OAuthTokenModel.findOne({ linkedAddress: address });
+      if (!link) {
+        next(AppError.badRequest('Link a GitHub account before releasing'));
+        return;
+      }
+      const accessToken = decryptToString({
+        ciphertext: link.encryptedToken,
+        iv: link.iv,
+        authTag: link.authTag,
+        keyVersion: link.keyVersion,
+      });
+
+      const pr = await fetchPullRequest(
+        bounty.repo.owner,
+        bounty.repo.name,
+        claim.prNumber,
+        accessToken,
+      );
+      if (!pr.merged) {
+        next(AppError.conflict('The pull request is not merged yet'));
+        return;
+      }
+
+      await settleMergedClaim(bountyId, claim.hunterAddress, pr.mergeCommitSha);
+      res.json({ bountyId, status: 'releasing', prNumber: claim.prNumber });
+    } catch (err: unknown) {
+      if (err instanceof GithubError) {
+        next(AppError.badRequest(err.message));
+        return;
+      }
+      next(err);
+    }
+  },
+);
 
 export { router as claimsRouter };

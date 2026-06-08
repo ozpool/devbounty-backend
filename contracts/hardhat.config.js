@@ -18,4 +18,11 @@ module.exports = {
     cache: './cache',
     artifacts: './artifacts',
   },
+  networks: {
+    // Target for `npm run deploy:local` — the standalone node from `hardhat node`.
+    // Its accounts and chain id (31337) are provided by that node, not configured here.
+    localhost: {
+      url: 'http://127.0.0.1:8545',
+    },
+  },
 };
