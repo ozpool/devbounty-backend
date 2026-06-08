@@ -8,7 +8,7 @@ import {
 import { z } from 'zod';
 import { generateSiweNonce } from 'viem/siwe';
 import { env } from '../../shared/config/env.js';
-import { signSession, signNonce, readNonce } from '../../shared/auth/jwt.js';
+import { signSession, signNonce, readNonce, sessionCookieMaxAgeMs } from '../../shared/auth/jwt.js';
 import { verifySiwe, SiweError } from '../../shared/auth/siwe.js';
 import { HunterModel } from '../../shared/models/index.js';
 import { AppError } from '../../shared/utils/AppError.js';
@@ -76,7 +76,10 @@ router.post(
 
       const token = signSession({ sub: address, role: DEFAULT_ROLE });
       res.clearCookie(NONCE_COOKIE, cookieOptions());
-      res.cookie(env.JWT_COOKIE_NAME, token, cookieOptions());
+      res.cookie(env.JWT_COOKIE_NAME, token, {
+        ...cookieOptions(),
+        maxAge: sessionCookieMaxAgeMs(token),
+      });
       res.json({ user: { address, role: DEFAULT_ROLE } });
     } catch (err: unknown) {
       if (err instanceof SiweError) {

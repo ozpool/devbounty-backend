@@ -113,6 +113,10 @@ describe('bounties', () => {
       .set('Cookie', COOKIE)
       .send(validBounty({ language: 'rust', issueNumber: 8 }));
 
+    // The board only lists funded bounties; simulate the indexer confirming
+    // both deposits so they leave 'pending_deposit' and surface on the board.
+    await BountyModel.updateMany({}, { $set: { lifecycleStatus: 'open' } });
+
     const all = await request(app).get('/bounties');
     expect(all.status).toBe(200);
     expect(all.body.total).toBe(2);
@@ -126,6 +130,19 @@ describe('bounties', () => {
     const paged = await request(app).get('/bounties?pageSize=1&page=2');
     expect(paged.body.items).toHaveLength(1);
     expect(paged.body.pageSize).toBe(1);
+  });
+
+  it('hides unfunded pending_deposit bounties from the default board', async () => {
+    const app = createApp();
+    // A freshly created bounty is pending_deposit (no on-chain money yet).
+    await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+
+    const board = await request(app).get('/bounties');
+    expect(board.body.total).toBe(0);
+
+    // Still discoverable when a maintainer tool asks for it explicitly.
+    const pending = await request(app).get('/bounties?status=pending_deposit');
+    expect(pending.body.total).toBe(1);
   });
 
   it('returns 404 for an unknown bounty', async () => {
@@ -164,9 +181,58 @@ describe('bounties', () => {
       .set('Cookie', COOKIE)
       .send(validBounty({ amountUsdc: '500', issueNumber: 2 }));
 
+    // Board lists funded bounties only — confirm both deposits first.
+    await BountyModel.updateMany({}, { $set: { lifecycleStatus: 'open' } });
+
     // Lexicographically '9' > '50', so a string compare would wrongly keep it.
     const res = await request(app).get('/bounties?minAmount=50');
     expect(res.body.total).toBe(1);
     expect(res.body.items[0].amountUsdc).toBe('500');
+  });
+
+  it('lets the maintainer cancel a pending-deposit bounty and hides it from the board', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const id = create.body.bountyId as string;
+
+    const cancel = await request(app).post(`/bounties/${id}/cancel`).set('Cookie', COOKIE);
+    expect(cancel.status).toBe(200);
+    expect(cancel.body.status).toBe('cancelled');
+
+    // Hidden from the default board, still fetchable by id.
+    const board = await request(app).get('/bounties');
+    expect(board.body.total).toBe(0);
+    const detail = await request(app).get(`/bounties/${id}`);
+    expect(detail.body.lifecycleStatus).toBe('cancelled');
+  });
+
+  it('rejects a cancel from a non-maintainer', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const id = create.body.bountyId as string;
+    const otherCookie = `devbounty_jwt=${signSession({
+      sub: '0x1111111111111111111111111111111111111111',
+      role: 'hunter',
+    })}`;
+
+    const res = await request(app).post(`/bounties/${id}/cancel`).set('Cookie', otherCookie);
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses to cancel a bounty that is no longer pending deposit', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const id = create.body.bountyId as string;
+    await BountyModel.updateOne({ bountyId: id }, { $set: { lifecycleStatus: 'open' } });
+
+    const res = await request(app).post(`/bounties/${id}/cancel`).set('Cookie', COOKIE);
+    expect(res.status).toBe(409);
+  });
+
+  it('requires auth to cancel', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const res = await request(app).post(`/bounties/${create.body.bountyId}/cancel`);
+    expect(res.status).toBe(401);
   });
 });

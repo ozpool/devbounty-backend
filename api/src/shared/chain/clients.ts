@@ -11,6 +11,7 @@ import {
 } from 'viem';
 import { privateKeyToAccount, type PrivateKeyAccount } from 'viem/accounts';
 import { env } from '../config/env.js';
+import { escrowAbi } from './escrowAbi.js';
 
 // Built from CHAIN_ID/RPC rather than a hardcoded chain so the same code runs
 // against Arbitrum Sepolia and a local node.
@@ -62,6 +63,26 @@ export function getWalletClient(): WalletClient {
     });
   }
   return walletClient;
+}
+
+// Mirror of the contract's Status enum order: None=0, Open=1, Paid=2, Refunded=3.
+export const ON_CHAIN_STATUS_NONE = 0;
+
+/**
+ * Read a bounty's on-chain escrow status (the `bounties` mapping's `status`
+ * field). Returns 0 (None) when the bounty was never funded. Used to verify a
+ * bounty really is unfunded before a destructive off-chain action like cancel,
+ * since the off-chain record can lag the chain.
+ */
+export async function getOnChainBountyStatus(bountyId: `0x${string}`): Promise<number> {
+  const result = await getPublicClient().readContract({
+    address: getEscrowAddress(),
+    abi: escrowAbi,
+    functionName: 'bounties',
+    args: [bountyId],
+  });
+  // Outputs: [maintainer, amount, createdAt, refundWindow, status]
+  return Number((result as readonly unknown[])[4]);
 }
 
 /** True when both a signer and an escrow address are configured for releasing. */

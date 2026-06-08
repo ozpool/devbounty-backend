@@ -52,6 +52,9 @@ const chainEnv = z.object({
   BACKEND_PRIVATE_KEY: z.string().optional(),
   // Reorg buffer: the indexer only processes events this many blocks behind head.
   INDEXER_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(5),
+  // Max blocks scanned per getLogs call. Public/free RPC tiers cap this hard
+  // (Alchemy free allows only 10), so it is configurable per environment.
+  INDEXER_MAX_RANGE: z.coerce.number().int().positive().default(2000),
   // First block to scan on a cold start (the escrow's deploy block).
   INDEXER_START_BLOCK: z.coerce.number().int().nonnegative().default(0),
   // Health marks the indexer stale once its checkpoint heartbeat is older than

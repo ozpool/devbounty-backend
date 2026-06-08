@@ -10,6 +10,11 @@ import {
 } from '../../shared/models/index.js';
 import { deriveBountyId } from '../../shared/bounty/bountyId.js';
 import { writeAudit } from '../../shared/audit/writeAudit.js';
+import {
+  isIndexerConfigured,
+  getOnChainBountyStatus,
+  ON_CHAIN_STATUS_NONE,
+} from '../../shared/chain/clients.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -66,7 +71,7 @@ router.post(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const parsed = createBody.safeParse(req.body);
     if (!parsed.success) {
-      next(AppError.badRequest('Invalid bounty payload'));
+      next(AppError.badRequest('Invalid bounty payload', parsed.error.flatten().fieldErrors));
       return;
     }
     const { address } = getAuth(req);
@@ -74,7 +79,9 @@ router.post(
 
     try {
       if (idemKey) {
-        const prior = await IdempotencyKeyModel.findOne({ key: idemKey }).lean();
+        // Scope the replay lookup to the caller so one user can't probe another
+        // user's request by guessing their Idempotency-Key.
+        const prior = await IdempotencyKeyModel.findOne({ key: idemKey, actor: address }).lean();
         if (prior) {
           res.status(prior.responseStatus).json(prior.responseBody);
           return;
@@ -138,7 +145,12 @@ router.get('/', async (req: Request, res: Response, next: NextFunction): Promise
   }
   const q = parsed.data;
   const filter: Record<string, unknown> = {};
-  if (q.status) filter['lifecycleStatus'] = q.status;
+  // The public board only lists bounties whose USDC is actually escrowed on
+  // chain. A 'pending_deposit' bounty is an off-chain record whose deposit has
+  // not landed (or never will, if the maintainer abandoned funding), so it has
+  // no money behind it and must never surface here. 'cancelled' is hidden too.
+  // An explicit ?status= still honours the request (e.g. a maintainer tool).
+  filter['lifecycleStatus'] = q.status ?? { $nin: ['cancelled', 'pending_deposit'] };
   if (q.language) filter['language'] = q.language;
   if (q.repo) filter['repo.fullName'] = q.repo;
   // amountUsdc is a decimal string, so compare numerically via $toDecimal
@@ -272,6 +284,58 @@ router.post(
         ip: req.ip,
       });
       res.json({ bountyId: bounty.bountyId, status: 'refunded' });
+    } catch (err: unknown) {
+      next(err);
+    }
+  },
+);
+
+// POST /bounties/:id/cancel — the maintainer abandons a bounty that was never
+// funded. Soft-cancel (kept for history, hidden from the board). Guarded so a
+// bounty that is actually funded on chain can never be cancelled off-chain: the
+// off-chain record can lag the chain, and cancelling a funded bounty would strand
+// the escrowed USDC and desync the indexer.
+router.post(
+  '/:id/cancel',
+  requireAuth,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const { address } = getAuth(req);
+    try {
+      const bounty = await BountyModel.findOne({ bountyId: req.params.id });
+      if (!bounty) {
+        next(AppError.notFound('Bounty not found'));
+        return;
+      }
+      if (bounty.maintainerAddress !== address) {
+        next(AppError.forbidden('Only the bounty maintainer can cancel this bounty'));
+        return;
+      }
+      if (bounty.lifecycleStatus !== 'pending_deposit') {
+        next(AppError.conflict('Only a bounty still pending deposit can be cancelled'));
+        return;
+      }
+      // When an escrow is configured, confirm on chain that no deposit landed.
+      // With no escrow configured, on-chain funding is impossible, so the
+      // off-chain status is authoritative and the read is skipped.
+      if (isIndexerConfigured()) {
+        const onChainStatus = await getOnChainBountyStatus(bounty.bountyId as `0x${string}`);
+        if (onChainStatus !== ON_CHAIN_STATUS_NONE) {
+          next(
+            AppError.conflict('This bounty is funded on chain; refund it instead of cancelling'),
+          );
+          return;
+        }
+      }
+
+      bounty.lifecycleStatus = 'cancelled';
+      await bounty.save();
+      await writeAudit({
+        action: 'bounty.cancelled',
+        actor: getAuth(req),
+        target: { type: 'bounty', id: bounty.bountyId },
+        ip: req.ip,
+      });
+      res.json({ bountyId: bounty.bountyId, status: 'cancelled' });
     } catch (err: unknown) {
       next(err);
     }

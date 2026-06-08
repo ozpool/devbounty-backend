@@ -20,6 +20,15 @@ import { webhooksRouter } from './routes/webhooks.js';
 export function createApp(): express.Application {
   const app = express();
 
+  // ── Proxy trust ───────────────────────────────────────────────────────────
+  // The API runs behind a single reverse proxy in production (Render's load
+  // balancer). Trust exactly one hop so req.ip and req.protocol reflect the real
+  // client from X-Forwarded-* instead of the proxy's own address — without this
+  // every request shares the proxy IP and the auth rate limiter locks all users
+  // out at once. One hop (not `true`) so a client cannot spoof its IP by sending
+  // its own X-Forwarded-For.
+  app.set('trust proxy', 1);
+
   // ── Security headers ──────────────────────────────────────────────────────
   // Explicit CSP — no unsafe-inline, no unsafe-eval anywhere.
   app.use(
@@ -58,7 +67,21 @@ export function createApp(): express.Application {
   // Mount express.raw() on that path BEFORE express.json() so it wins the route
   // and the signed bytes reach the handler untouched (express.json then skips it
   // because body-parser marks the request body as already read).
-  app.use('/webhooks/github', express.raw({ type: 'application/json' }));
+  // Some forwarders/proxies duplicate the Content-Type ("application/json,
+  // application/json"), which is an invalid media type that makes body-parser
+  // throw before it reads the body. Collapse it to the first value first.
+  app.use('/webhooks/github', (req, _res, next) => {
+    const ct = req.headers['content-type'];
+    if (typeof ct === 'string' && ct.includes(',')) {
+      req.headers['content-type'] = (ct.split(',')[0] ?? ct).trim();
+    }
+    next();
+  });
+  // type '*/*' captures the body regardless of Content-Type: GitHub always sends
+  // application/json, but local forwarders can still mangle it. The HMAC
+  // signature — not the content type — authenticates this endpoint, so accepting
+  // any content type here is safe and more robust.
+  app.use('/webhooks/github', express.raw({ type: '*/*' }));
 
   // JSON parser for all other routes — only parse bodies that actually declare
   // application/json, so a mislabelled or unexpected content type is left untouched.

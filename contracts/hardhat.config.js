@@ -1,9 +1,18 @@
 require('@nomicfoundation/hardhat-ethers');
 require('@nomicfoundation/hardhat-chai-matchers');
+require('@nomicfoundation/hardhat-verify');
 
-// Local-only configuration: the in-process Hardhat network is enough to compile
-// and test BountyEscrow. The Arbitrum Sepolia deploy target is added in a later
-// issue once a funded signer and an RPC URL exist.
+// The in-process Hardhat network compiles and tests BountyEscrow; `localhost`
+// targets a standalone node; `arbitrumSepolia` is the testnet deploy target.
+// Network secrets (RPC URL, deployer key) come from the environment so nothing
+// sensitive is committed — set ARB_SEPOLIA_RPC_URL and DEPLOYER_PRIVATE_KEY
+// before running `npm run deploy:arb-sepolia`.
+const ARB_SEPOLIA_RPC_URL = process.env.ARB_SEPOLIA_RPC_URL || '';
+const DEPLOYER_PRIVATE_KEY = process.env.DEPLOYER_PRIVATE_KEY || '';
+// Etherscan-family API key for source verification on Arbiscan. A single
+// multichain key from etherscan.io covers Arbitrum Sepolia.
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || '';
+
 /** @type {import('hardhat/config').HardhatUserConfig} */
 module.exports = {
   solidity: {
@@ -24,5 +33,15 @@ module.exports = {
     localhost: {
       url: 'http://127.0.0.1:8545',
     },
+    // Arbitrum Sepolia testnet (chain id 421614).
+    arbitrumSepolia: {
+      url: ARB_SEPOLIA_RPC_URL,
+      chainId: 421614,
+      accounts: DEPLOYER_PRIVATE_KEY ? [DEPLOYER_PRIVATE_KEY] : [],
+    },
+  },
+  // Source verification on Arbiscan goes through the Etherscan API family.
+  etherscan: {
+    apiKey: ETHERSCAN_API_KEY,
   },
 };

@@ -19,6 +19,20 @@ export function signSession(claims: SessionClaims): string {
   });
 }
 
+/**
+ * Milliseconds until a freshly-signed session token expires. Used to set the
+ * session cookie's maxAge so it persists for the token's whole lifetime (without
+ * it the cookie is cleared on browser close, logging the user out early) and the
+ * two can never drift from JWT_TTL.
+ */
+export function sessionCookieMaxAgeMs(token: string): number {
+  const payload = jwt.decode(token);
+  if (payload && typeof payload === 'object' && typeof payload.exp === 'number') {
+    return Math.max(0, payload.exp * 1000 - Date.now());
+  }
+  return 0;
+}
+
 /** Verify a session JWT and return its claims. Throws if invalid or expired. */
 export function verifySession(token: string): SessionClaims {
   const payload = jwt.verify(token, env.JWT_SECRET);

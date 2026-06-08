@@ -13,7 +13,11 @@ export function errorMiddleware(
   if (err instanceof AppError) {
     // Operational errors — safe to surface to the client
     logger.warn({ err }, 'AppError');
-    res.status(err.statusCode).json({ code: err.code, message: err.message });
+    res.status(err.statusCode).json({
+      code: err.code,
+      message: err.message,
+      ...(err.details !== undefined ? { details: err.details } : {}),
+    });
     return;
   }
 
