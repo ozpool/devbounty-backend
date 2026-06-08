@@ -102,6 +102,32 @@ describe('bounties', () => {
     expect(await BountyModel.countDocuments({})).toBe(1);
   });
 
+  it('scopes Idempotency-Key per caller without cross-tenant collision', async () => {
+    const app = createApp();
+    const key = 'shared-key';
+    const a = await request(app)
+      .post('/bounties')
+      .set('Cookie', COOKIE)
+      .set('Idempotency-Key', key)
+      .send(validBounty());
+    const otherCookie = `devbounty_jwt=${signSession({
+      sub: '0x1111111111111111111111111111111111111111',
+      role: 'hunter',
+    })}`;
+    const b = await request(app)
+      .post('/bounties')
+      .set('Cookie', otherCookie)
+      .set('Idempotency-Key', key)
+      .send(validBounty());
+
+    // A second caller reusing the same key string must not collide with the first
+    // (no 500), and gets their own bounty.
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(b.body.bountyId).not.toBe(a.body.bountyId);
+    expect(await BountyModel.countDocuments({})).toBe(2);
+  });
+
   it('lists and filters bounties with pagination', async () => {
     const app = createApp();
     await request(app)
@@ -130,6 +156,38 @@ describe('bounties', () => {
     const paged = await request(app).get('/bounties?pageSize=1&page=2');
     expect(paged.body.items).toHaveLength(1);
     expect(paged.body.pageSize).toBe(1);
+  });
+
+  it('records a deposit to move a bounty onto the board (fast-path)', async () => {
+    const app = createApp();
+    const create = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const id = create.body.bountyId as string;
+    expect(create.body.lifecycleStatus).toBe('pending_deposit');
+
+    const tx = `0x${'cd'.repeat(32)}`;
+    const recorded = await request(app)
+      .post(`/bounties/${id}/deposit-recorded`)
+      .set('Cookie', COOKIE)
+      .send({ txHash: tx });
+    expect(recorded.status).toBe(200);
+    expect(recorded.body.status).toBe('open');
+
+    // It now surfaces on the default board and is flagged not-pending.
+    const board = await request(app).get('/bounties');
+    expect(board.body.total).toBe(1);
+    expect(board.body.items[0].pendingConfirmation).toBe(false);
+
+    // A non-maintainer cannot record a deposit.
+    const otherCookie = `devbounty_jwt=${signSession({
+      sub: '0x2222222222222222222222222222222222222222',
+      role: 'hunter',
+    })}`;
+    const second = await request(app).post('/bounties').set('Cookie', COOKIE).send(validBounty());
+    const forbidden = await request(app)
+      .post(`/bounties/${second.body.bountyId}/deposit-recorded`)
+      .set('Cookie', otherCookie)
+      .send({ txHash: tx });
+    expect(forbidden.status).toBe(403);
   });
 
   it('hides unfunded pending_deposit bounties from the default board', async () => {

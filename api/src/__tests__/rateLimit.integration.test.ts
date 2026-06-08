@@ -1,24 +1,39 @@
 /**
  * Tests for the in-memory rate-limit middleware and its wiring into the app.
- * No database needed — every rejection here happens before any DB access.
+ * A DB is connected because issuing a SIWE nonce now records it server-side
+ * (one-time-use store); the limiter itself still rejects before any DB access.
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import express, { type Request } from 'express';
 
 process.env['NODE_ENV'] = 'test';
 process.env['LOG_LEVEL'] = 'fatal';
+process.env['CORS_ORIGIN'] = 'http://localhost:3000';
+process.env['API_PUBLIC_BASE_URL'] = 'http://localhost:4000';
+process.env['INTERNAL_HEALTH_TOKEN'] = 'test-internal-token';
 // Low caps so the wiring tests below stay tiny and deterministic. Set before any
 // import that loads the env (frozen on first read). Cleared in afterAll so a
 // later test file sharing this worker re-reads the defaults.
 process.env['RATE_LIMIT_AUTH_MAX'] = '3';
 process.env['RATE_LIMIT_MUTATION_MAX'] = '2';
 
+const mongod = await MongoMemoryServer.create();
+process.env['MONGO_URI'] = mongod.getUri();
+
 const { rateLimit, ipKey } = await import('../api/middleware/rateLimit.js');
 const { errorMiddleware } = await import('../api/middleware/error.js');
 const { createApp } = await import('../api/app.js');
 
-afterAll(() => {
+beforeAll(async () => {
+  await mongoose.connect(mongod.getUri());
+}, 30_000);
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  await mongod.stop();
   delete process.env['RATE_LIMIT_AUTH_MAX'];
   delete process.env['RATE_LIMIT_MUTATION_MAX'];
 });

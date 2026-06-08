@@ -87,6 +87,16 @@ describe('claims', () => {
     expect(res.status).toBe(403);
   });
 
+  it('refuses to claim an unfunded (pending_deposit) bounty', async () => {
+    const bountyId = await makeBounty();
+    await BountyModel.updateOne({ bountyId }, { $set: { lifecycleStatus: 'pending_deposit' } });
+    await linkGithub(HUNTER);
+    const res = await request(createApp())
+      .post(`/bounties/${bountyId}/claim`)
+      .set('Cookie', COOKIE);
+    expect(res.status).toBe(409);
+  });
+
   it('claims a bounty when GitHub-linked', async () => {
     const bountyId = await makeBounty();
     await linkGithub(HUNTER);
