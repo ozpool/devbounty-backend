@@ -33,6 +33,24 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
   }
 }
 
+/**
+ * Attach req.auth when a valid session cookie is present, but never reject.
+ * Used before the mutation rate limiter so it can key on the verified wallet
+ * address; an invalid or absent cookie simply leaves req.auth unset.
+ */
+export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
+  const token = req.cookies?.[env.JWT_COOKIE_NAME] as string | undefined;
+  if (token) {
+    try {
+      const claims = verifySession(token);
+      req.auth = { address: claims.sub, role: claims.role };
+    } catch {
+      // Anonymous request — leave req.auth unset and continue.
+    }
+  }
+  next();
+}
+
 /** Require the authenticated user to hold one of the given roles (use after requireAuth). */
 export function requireRole(...roles: string[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {

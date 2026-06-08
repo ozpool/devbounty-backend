@@ -5,6 +5,8 @@ import cookieParser from 'cookie-parser';
 import { env } from '../shared/config/env.js';
 import { httpLogger } from '../shared/utils/logger.js';
 import { errorMiddleware } from './middleware/error.js';
+import { optionalAuth } from './middleware/auth.js';
+import { rateLimit, ipKey, authOrIpKey } from './middleware/rateLimit.js';
 import { healthRouter } from './routes/health.js';
 import { authRouter } from './routes/auth.js';
 import { githubAuthRouter } from './routes/github.js';
@@ -61,6 +63,35 @@ export function createApp(): express.Application {
   // JSON parser for all other routes — only parse bodies that actually declare
   // application/json, so a mislabelled or unexpected content type is left untouched.
   app.use(express.json({ type: 'application/json' }));
+
+  // ── Rate limiting ─────────────────────────────────────────────────────────
+  // Auth endpoints are capped per client IP (cheapest to abuse). Every limiter
+  // owns its own in-memory store, created fresh per app instance.
+  const authLimiter = rateLimit({
+    windowMs: env.RATE_LIMIT_AUTH_WINDOW_MS,
+    max: env.RATE_LIMIT_AUTH_MAX,
+    keyBy: ipKey,
+  });
+  app.use('/auth', authLimiter);
+
+  // State-changing requests are capped per authenticated wallet (falling back to
+  // IP when anonymous). Skips safe methods, the /auth flow (already capped above)
+  // and /webhooks/github (HMAC-verified, deduped, and bursts from GitHub are
+  // legitimate). optionalAuth runs first so the limiter can key on the address.
+  const mutationLimiter = rateLimit({
+    windowMs: env.RATE_LIMIT_MUTATION_WINDOW_MS,
+    max: env.RATE_LIMIT_MUTATION_MAX,
+    keyBy: authOrIpKey,
+  });
+  app.use((req, res, next) => {
+    const safe = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+    const exempt = req.path.startsWith('/auth') || req.path.startsWith('/webhooks');
+    if (safe || exempt) {
+      next();
+      return;
+    }
+    optionalAuth(req, res, () => mutationLimiter(req, res, next));
+  });
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);

@@ -10,6 +10,7 @@ import {
 import { decryptToString } from '../../shared/crypto/tokenCrypto.js';
 import { fetchPullRequest, GithubError } from '../../shared/github/oauth.js';
 import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
+import { writeAudit } from '../../shared/audit/writeAudit.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -80,6 +81,12 @@ router.post('/:id/claim', requireAuth, async (req: Request, res: Response, next:
     await ClaimModel.create({ bountyId, hunterAddress: address, status: 'active', expiresAt });
     bounty.lifecycleStatus = 'claimed';
     await bounty.save();
+    await writeAudit({
+      action: 'claim.created',
+      actor: getAuth(req),
+      target: { type: 'bounty', id: bounty.bountyId },
+      ip: req.ip,
+    });
     res.status(201).json({ bountyId, expiresAt });
   } catch (err: unknown) {
     if (isDuplicateKeyError(err)) {
@@ -152,6 +159,13 @@ router.post('/:id/submit', requireAuth, async (req: Request, res: Response, next
     claim.status = 'submitted';
     await claim.save();
     await BountyModel.updateOne({ bountyId }, { $set: { lifecycleStatus: 'submitted' } });
+    await writeAudit({
+      action: 'claim.submitted',
+      actor: getAuth(req),
+      target: { type: 'bounty', id: bounty.bountyId },
+      metadata: { prUrl, prNumber },
+      ip: req.ip,
+    });
     res.json({ bountyId, prUrl, prNumber, status: 'submitted' });
   } catch (err: unknown) {
     if (isDuplicateKeyError(err)) {
@@ -216,6 +230,13 @@ router.post(
       }
 
       await settleMergedClaim(bountyId, claim.hunterAddress, pr.mergeCommitSha);
+      await writeAudit({
+        action: 'bounty.manual_release',
+        actor: getAuth(req),
+        target: { type: 'bounty', id: bounty.bountyId },
+        metadata: { prNumber: claim.prNumber, mergeCommitSha: pr.mergeCommitSha },
+        ip: req.ip,
+      });
       res.json({ bountyId, status: 'releasing', prNumber: claim.prNumber });
     } catch (err: unknown) {
       if (err instanceof GithubError) {

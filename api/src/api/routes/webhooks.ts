@@ -3,6 +3,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { AppError } from '../../shared/utils/AppError.js';
 import { verifyWebhookSignature } from '../../shared/github/webhook.js';
 import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
+import { writeAudit } from '../../shared/audit/writeAudit.js';
 import { ClaimModel, RepoModel, WebhookDeliveryModel } from '../../shared/models/index.js';
 
 const router = Router();
@@ -115,6 +116,13 @@ async function processDelivery(
   // the merge commit, advances the bounty to 'releasing', and releases on-chain
   // when a signer is configured.
   await settleMergedClaim(claim.bountyId, claim.hunterAddress, mergeCommitSha);
+
+  // System actor: the merge was confirmed by a signature-verified GitHub delivery.
+  await writeAudit({
+    action: 'bounty.settled_via_webhook',
+    target: { type: 'bounty', id: claim.bountyId },
+    metadata: { prNumber: pr.number, hunterAddress: claim.hunterAddress },
+  });
 
   return { matched: true, bountyId: claim.bountyId };
 }

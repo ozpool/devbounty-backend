@@ -10,6 +10,7 @@ import {
   GithubError,
 } from '../../shared/github/oauth.js';
 import { env } from '../../shared/config/env.js';
+import { writeAudit } from '../../shared/audit/writeAudit.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -95,12 +96,20 @@ router.post(
         webhookKeyVersion: sealed.keyVersion,
       };
       // Rotation: keep the prior signing key as the fallback for in-flight deliveries.
-      if (existing?.webhookSecretCurrent) {
-        update['webhookSecretPrevious'] = existing.webhookSecretCurrent;
+      const rotated = Boolean(existing?.webhookSecretCurrent);
+      if (rotated) {
+        update['webhookSecretPrevious'] = existing?.webhookSecretCurrent;
         update['webhookSecretRotatedAt'] = new Date();
       }
       await RepoModel.updateOne({ githubRepoId: meta.id }, { $set: update }, { upsert: true });
 
+      await writeAudit({
+        action: rotated ? 'repo.webhook_rotated' : 'repo.webhook_registered',
+        actor: getAuth(req),
+        target: { type: 'repo', id: String(meta.id) },
+        metadata: { fullName: meta.fullName, webhookId },
+        ip: req.ip,
+      });
       res.status(201).json({ repo: meta.fullName, githubRepoId: meta.id, webhookId });
     } catch (err: unknown) {
       if (err instanceof GithubError) {

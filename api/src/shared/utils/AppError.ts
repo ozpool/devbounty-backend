@@ -38,6 +38,10 @@ export class AppError extends Error {
     return new AppError({ statusCode: 409, code: 'CONFLICT', message, cause });
   }
 
+  static tooManyRequests(message = 'Too many requests', cause?: unknown): AppError {
+    return new AppError({ statusCode: 429, code: 'RATE_LIMITED', message, cause });
+  }
+
   static internal(message = 'Internal server error', cause?: unknown): AppError {
     return new AppError({ statusCode: 500, code: 'INTERNAL_ERROR', message, cause });
   }

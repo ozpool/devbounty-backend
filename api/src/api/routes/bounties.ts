@@ -8,6 +8,7 @@ import {
   type Bounty,
 } from '../../shared/models/index.js';
 import { deriveBountyId } from '../../shared/bounty/bountyId.js';
+import { writeAudit } from '../../shared/audit/writeAudit.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -236,6 +237,13 @@ router.post(
       bounty.lifecycleStatus = 'refunded';
       bounty.txRefund = parsed.data.txHash;
       await bounty.save();
+      await writeAudit({
+        action: 'bounty.refund_recorded',
+        actor: getAuth(req),
+        target: { type: 'bounty', id: bounty.bountyId },
+        metadata: { txHash: parsed.data.txHash },
+        ip: req.ip,
+      });
       res.json({ bountyId: bounty.bountyId, status: 'refunded' });
     } catch (err: unknown) {
       next(err);
