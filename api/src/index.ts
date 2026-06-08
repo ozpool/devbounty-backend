@@ -3,6 +3,7 @@ import { connectDb, registerServer, registerShutdownHandlers } from './shared/co
 import { env } from './shared/config/env.js';
 import { logger } from './shared/utils/logger.js';
 import { initSentry } from './shared/utils/sentry.js';
+import { startIndexerInProcess } from './indexer/index.js';
 
 async function main(): Promise<void> {
   // Sentry must be initialised before anything else so it captures startup errors.
@@ -20,6 +21,12 @@ async function main(): Promise<void> {
   // before closing the DB.
   registerServer(server);
   registerShutdownHandlers();
+
+  // Optionally co-host the indexer in this process (free single-instance deploys).
+  // The DB is already connected; the indexer's lease keeps it the single scanner.
+  if (env.RUN_INDEXER_IN_PROCESS) {
+    startIndexerInProcess();
+  }
 }
 
 main().catch((err: unknown) => {

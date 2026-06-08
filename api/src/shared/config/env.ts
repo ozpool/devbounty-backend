@@ -61,6 +61,14 @@ const chainEnv = z.object({
   // this. The indexer is a separate singleton process, so this is reported by the
   // API's health endpoint but never gates the API's own readiness.
   INDEXER_STALE_AFTER_MS: z.coerce.number().int().positive().default(60_000),
+  // Run the indexer loop inside the API process instead of as its own service.
+  // Lets a single-instance free-tier deploy index without a paid worker. A DB
+  // lease still guarantees only one loop scans, so this is safe to leave on as
+  // long as the API runs a single instance; turn OFF before scaling horizontally.
+  RUN_INDEXER_IN_PROCESS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 const servicesEnv = z.object({
