@@ -36,6 +36,7 @@ const authEnv = z.object({
   // HS256 signing key — at least 32 chars of entropy in production.
   JWT_SECRET: secretInProd(32, 'test-jwt-secret-not-for-production'),
   JWT_COOKIE_NAME: z.string().default('devbounty_jwt'),
+  JWT_TTL: z.string().default('7d'), // session lifetime, e.g. 7d / 12h / 3600
 });
 
 const chainEnv = z.object({

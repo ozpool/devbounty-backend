@@ -22,17 +22,15 @@ const { createApp } = await import('../api/app.js');
 let mongod: MongoMemoryServer;
 
 beforeAll(async () => {
-  if (!process.env['MONGO_URI']) {
-    mongod = await MongoMemoryServer.create();
-    process.env['MONGO_URI'] = mongod.getUri();
-  }
-
-  await mongoose.connect(process.env['MONGO_URI']!);
+  // Always start our own in-memory Mongo — never reuse a MONGO_URI that may have
+  // leaked from (and been stopped by) an earlier test file in the same process.
+  mongod = await MongoMemoryServer.create();
+  await mongoose.connect(mongod.getUri());
 }, 30_000);
 
 afterAll(async () => {
   await mongoose.disconnect();
-  if (mongod) await mongod.stop();
+  await mongod.stop();
 });
 
 describe('GET /health (liveness)', () => {

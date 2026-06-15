@@ -1,4 +1,4 @@
-import { Schema, model, type HydratedDocument } from 'mongoose';
+import mongoose, { Schema, model, type HydratedDocument, type Model } from 'mongoose';
 
 export interface HunterLanguage {
   name: string;
@@ -43,4 +43,5 @@ const hunterSchema = new Schema<Hunter>(
 );
 
 export type HunterDocument = HydratedDocument<Hunter>;
-export const HunterModel = model<Hunter>('Hunter', hunterSchema);
+export const HunterModel: Model<Hunter> =
+  (mongoose.models.Hunter as Model<Hunter> | undefined) ?? model<Hunter>('Hunter', hunterSchema);
