@@ -1,4 +1,4 @@
-import jwt, { type SignOptions } from 'jsonwebtoken';
+import jwt, { type SignOptions, type Algorithm } from 'jsonwebtoken';
 import { env } from '../config/env.js';
 
 // Short window between issuing a SIWE nonce and the wallet signing it.
@@ -11,9 +11,14 @@ export interface SessionClaims {
 
 const sessionTtl = env.JWT_TTL as SignOptions['expiresIn'];
 
+// All tokens are verified with the algorithm pinned to HS256. The secret is a
+// symmetric string so an attacker can't swap in an asymmetric alg, but pinning is
+// cheap defence-in-depth against any future jsonwebtoken alg-confusion surface.
+const HS256_ONLY = { algorithms: ['HS256'] as Algorithm[] };
+
 /** Sign a session JWT (HS256) with the wallet address as the subject. */
 export function signSession(claims: SessionClaims): string {
-  return jwt.sign({ role: claims.role }, env.JWT_SECRET, {
+  return jwt.sign({ role: claims.role, typ: 'session' }, env.JWT_SECRET, {
     subject: claims.sub,
     expiresIn: sessionTtl,
   });
@@ -35,8 +40,13 @@ export function sessionCookieMaxAgeMs(token: string): number {
 
 /** Verify a session JWT and return its claims. Throws if invalid or expired. */
 export function verifySession(token: string): SessionClaims {
-  const payload = jwt.verify(token, env.JWT_SECRET);
-  if (typeof payload === 'string' || !payload.sub || typeof payload['role'] !== 'string') {
+  const payload = jwt.verify(token, env.JWT_SECRET, HS256_ONLY);
+  if (
+    typeof payload === 'string' ||
+    payload['typ'] !== 'session' ||
+    !payload.sub ||
+    typeof payload['role'] !== 'string'
+  ) {
     throw new Error('Malformed session token');
   }
   return { sub: payload.sub, role: payload['role'] };
@@ -49,7 +59,7 @@ export function signNonce(nonce: string): string {
 
 /** Read and validate a nonce token, returning the nonce. Throws if invalid or expired. */
 export function readNonce(token: string): string {
-  const payload = jwt.verify(token, env.JWT_SECRET);
+  const payload = jwt.verify(token, env.JWT_SECRET, HS256_ONLY);
   if (
     typeof payload === 'string' ||
     payload['typ'] !== 'siwe-nonce' ||
@@ -80,7 +90,7 @@ export function signGithubState(address: string, nonce: string): string {
 
 /** Read and validate a GitHub OAuth state, returning the bound address and nonce. */
 export function readGithubState(token: string): GithubState {
-  const payload = jwt.verify(token, env.JWT_SECRET);
+  const payload = jwt.verify(token, env.JWT_SECRET, HS256_ONLY);
   if (
     typeof payload === 'string' ||
     payload['typ'] !== 'gh-oauth-state' ||

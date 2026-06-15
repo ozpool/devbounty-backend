@@ -104,6 +104,26 @@ describe('SIWE auth flow', () => {
     const res = await request(createApp()).get('/me');
     expect(res.status).toBe(401);
   });
+
+  it('rejects a replayed nonce (one-time use)', async () => {
+    const app = createApp();
+    const agent = request.agent(app);
+    const nonceRes = await agent.post('/auth/siwe/nonce').send({ address: account.address });
+    const setCookie = nonceRes.headers['set-cookie'] as unknown as string[];
+    const nonceCookie = setCookie.find((c) => c.startsWith('siwe_nonce='))!;
+    const message = buildMessage(nonceRes.body.nonce as string);
+    const signature = await account.signMessage({ message });
+
+    const first = await agent.post('/auth/siwe/verify').send({ message, signature });
+    expect(first.status).toBe(200);
+
+    // Replay the exact same nonce cookie + message + signature from a fresh client.
+    const replay = await request(app)
+      .post('/auth/siwe/verify')
+      .set('Cookie', nonceCookie)
+      .send({ message, signature });
+    expect(replay.status).toBe(401);
+  });
 });
 
 describe('requireRole', () => {

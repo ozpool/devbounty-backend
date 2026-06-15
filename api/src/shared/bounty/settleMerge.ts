@@ -11,10 +11,14 @@ function shaToBytes32(sha: string): Hex {
   return pad(hex, { size: 32, dir: 'right' });
 }
 
+// Cap on automatic release retries. Once a bounty has failed this many times it
+// is left in 'release_failed' for a human, instead of re-sending forever.
+export const MAX_RELEASE_ATTEMPTS = 5;
+
 // Send the on-chain release. Errors are logged (never swallowed) and the bounty
 // is moved to 'release_failed' for reconciliation; on success the tx hash is
 // recorded and the indexer advances the bounty to 'paid' on the BountyReleased event.
-async function attemptRelease(
+export async function attemptRelease(
   bountyId: string,
   hunter: string,
   prCommitSha: string,
@@ -34,7 +38,51 @@ async function attemptRelease(
       { bountyId, err: err instanceof Error ? err.message : String(err) },
       'on-chain release failed',
     );
-    await BountyModel.updateOne({ bountyId }, { $set: { lifecycleStatus: 'release_failed' } });
+    await BountyModel.updateOne(
+      { bountyId },
+      { $set: { lifecycleStatus: 'release_failed' }, $inc: { releaseAttempts: 1 } },
+    );
+  }
+}
+
+// Fire the release without blocking the caller. The webhook (and manual-release)
+// must return promptly — GitHub aborts a delivery that takes too long — so the
+// on-chain send + receipt wait runs detached; the indexer confirms 'paid' from
+// the BountyReleased event, and a failed send lands in 'release_failed' for the
+// reconciler below. Errors are caught so a rejected detached promise can't crash
+// the process.
+function fireRelease(bountyId: string, hunter: string, prCommitSha: string): void {
+  void attemptRelease(bountyId, hunter, prCommitSha).catch((err: unknown) => {
+    logger.error(
+      { bountyId, err: err instanceof Error ? err.message : String(err) },
+      'detached release rejected',
+    );
+  });
+}
+
+/**
+ * Retry bounties stuck in 'release_failed' (transient RPC/gas failures), up to
+ * MAX_RELEASE_ATTEMPTS each. Driven by the indexer loop so it shares the single
+ * owner of the on-chain release write. A no-op when payout is not configured.
+ */
+export async function reconcileFailedReleases(limit = 5): Promise<void> {
+  if (!isPayoutConfigured()) return;
+  const stuck = await BountyModel.find({
+    lifecycleStatus: 'release_failed',
+    releaseAttempts: { $lt: MAX_RELEASE_ATTEMPTS },
+  })
+    .limit(limit)
+    .lean();
+  for (const b of stuck) {
+    const claim = await ClaimModel.findOne({ bountyId: b.bountyId, status: 'submitted' }).lean();
+    if (!claim?.prCommitSha || !claim.hunterAddress) continue;
+    // Re-arm only if we win the failed->releasing transition (single owner).
+    const armed = await BountyModel.updateOne(
+      { bountyId: b.bountyId, lifecycleStatus: 'release_failed' },
+      { $set: { lifecycleStatus: 'releasing' } },
+    );
+    if (armed.modifiedCount !== 1) continue;
+    await attemptRelease(b.bountyId, claim.hunterAddress, claim.prCommitSha);
   }
 }
 
@@ -51,17 +99,25 @@ export async function settleMergedClaim(
   hunterAddress: string,
   mergeCommitSha?: string,
 ): Promise<void> {
+  // Atomically claim the 'submitted' -> 'releasing' transition. Only the single
+  // caller whose update actually flips the status (modifiedCount === 1) goes on
+  // to send the on-chain release; any concurrent settlement (a second webhook
+  // delivery, or a webhook racing the maintainer's manual-release) sees
+  // modifiedCount === 0 and returns, so release() can never run twice and
+  // double-pay the same bounty.
+  const transition = await BountyModel.updateOne(
+    { bountyId, lifecycleStatus: 'submitted' },
+    { $set: { lifecycleStatus: 'releasing' } },
+  );
+  if (transition.modifiedCount !== 1) return;
+
   if (mergeCommitSha) {
     await ClaimModel.updateOne(
       { bountyId, status: 'submitted' },
       { $set: { prCommitSha: mergeCommitSha } },
     );
   }
-  await BountyModel.updateOne(
-    { bountyId, lifecycleStatus: 'submitted' },
-    { $set: { lifecycleStatus: 'releasing' } },
-  );
   if (isPayoutConfigured() && mergeCommitSha) {
-    await attemptRelease(bountyId, hunterAddress, mergeCommitSha);
+    fireRelease(bountyId, hunterAddress, mergeCommitSha);
   }
 }

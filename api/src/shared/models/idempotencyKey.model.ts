@@ -14,7 +14,7 @@ export interface IdempotencyKey {
 
 const idempotencyKeySchema = new Schema<IdempotencyKey>(
   {
-    key: { type: String, required: true, unique: true },
+    key: { type: String, required: true },
     route: { type: String, required: true },
     actor: { type: String, required: true },
     responseStatus: { type: Number, required: true },
@@ -22,6 +22,12 @@ const idempotencyKeySchema = new Schema<IdempotencyKey>(
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
+
+// Uniqueness is scoped to (key, actor), not key alone: one user's key string must
+// never collide with another's. A global-unique `key` let actor B's reuse of
+// actor A's key throw a duplicate-key error on insert (cross-tenant 500/DoS) and
+// defeated the per-caller scoping the route relies on.
+idempotencyKeySchema.index({ key: 1, actor: 1 }, { unique: true });
 
 idempotencyKeySchema.index({ createdAt: 1 }, { expireAfterSeconds: 24 * 60 * 60 });
 

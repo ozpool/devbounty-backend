@@ -5,6 +5,7 @@ import {
   http,
   isAddress,
   getAddress,
+  parseEventLogs,
   type Address,
   type PublicClient,
   type WalletClient,
@@ -83,6 +84,35 @@ export async function getOnChainBountyStatus(bountyId: `0x${string}`): Promise<n
   });
   // Outputs: [maintainer, amount, createdAt, refundWindow, status]
   return Number((result as readonly unknown[])[4]);
+}
+
+/**
+ * Confirm a transaction the client claims happened on the escrow really did, for
+ * the specific bounty, before we trust it off-chain. The receipt must exist, have
+ * succeeded, target the escrow, AND contain the named event (BountyCreated /
+ * BountyRefunded) carrying this bounty id. Returns false (never throws) for a
+ * missing/failed/unrelated/wrong-bounty tx so the caller can reject a bogus hash.
+ * Only meaningful when an escrow is configured; callers gate on isIndexerConfigured().
+ */
+export async function verifyEscrowEventTx(
+  txHash: `0x${string}`,
+  eventName: 'BountyCreated' | 'BountyRefunded',
+  bountyId: string,
+): Promise<boolean> {
+  try {
+    const receipt = await getPublicClient().getTransactionReceipt({ hash: txHash });
+    if (receipt.status !== 'success' || !receipt.to) return false;
+    if (getAddress(receipt.to) !== getEscrowAddress()) return false;
+    const events = parseEventLogs({ abi: escrowAbi, eventName, logs: receipt.logs });
+    const target = bountyId.toLowerCase();
+    return events.some((e) => {
+      const id = (e.args as { id?: string }).id;
+      return typeof id === 'string' && id.toLowerCase() === target;
+    });
+  } catch {
+    // Not mined yet, unknown hash, or RPC error — treat as unverifiable.
+    return false;
+  }
 }
 
 /** True when both a signer and an escrow address are configured for releasing. */

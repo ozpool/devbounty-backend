@@ -4,6 +4,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { env } from '../shared/config/env.js';
 import { httpLogger } from '../shared/utils/logger.js';
+import { AppError } from '../shared/utils/AppError.js';
 import { errorMiddleware } from './middleware/error.js';
 import { optionalAuth } from './middleware/auth.js';
 import { rateLimit, ipKey, authOrIpKey } from './middleware/rateLimit.js';
@@ -46,15 +47,43 @@ export function createApp(): express.Application {
     }),
   );
 
-  // ── CORS — strict single origin, credentials allowed for cookie auth ───────
+  // ── CORS — origin allowlist, credentials allowed for cookie auth ───────────
+  // Production: the single configured origin only. Development: also accept any
+  // localhost/127.0.0.1 port, so the frontend works whichever port Next picks
+  // (3000/3001/…) without ever reflecting an arbitrary external origin — that
+  // combination (reflect-all + credentials) is the CORS vulnerability we avoid.
+  const isDev = env.NODE_ENV !== 'production';
+  const localhostOrigin = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+  const isAllowedOrigin = (origin: string): boolean =>
+    origin === env.CORS_ORIGIN || (isDev && localhostOrigin.test(origin));
   app.use(
     cors({
-      origin: env.CORS_ORIGIN,
+      // `origin` may be undefined for same-origin / non-browser requests (curl,
+      // server-to-server); allow those, otherwise reflect only allowlisted origins.
+      origin: (origin, cb) => cb(null, !origin || isAllowedOrigin(origin)),
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'Idempotency-Key'],
     }),
   );
+
+  // ── CSRF: Origin allowlist on state-changing requests ─────────────────────
+  // The session cookie is SameSite=None in production (cross-site auth from the
+  // web origin), so it rides along on cross-site requests — CORS hides the
+  // *response* from a malicious page but does not stop the request from mutating
+  // state. Reject any unsafe-method request that carries a disallowed Origin. A
+  // request with no Origin (server-to-server, GitHub webhooks, curl) is allowed,
+  // since a browser always sends Origin on a cross-site state-changing request,
+  // so it cannot be used to forge one.
+  app.use((req, _res, next) => {
+    const safe = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+    const origin = req.headers.origin;
+    if (!safe && typeof origin === 'string' && !isAllowedOrigin(origin)) {
+      next(AppError.forbidden('Cross-origin request blocked'));
+      return;
+    }
+    next();
+  });
 
   // ── Request logging ───────────────────────────────────────────────────────
   app.use(httpLogger);

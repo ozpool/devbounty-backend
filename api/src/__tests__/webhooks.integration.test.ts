@@ -19,7 +19,7 @@ const mongod = await MongoMemoryServer.create();
 process.env['MONGO_URI'] = mongod.getUri();
 
 const { createApp } = await import('../api/app.js');
-const { BountyModel, ClaimModel, RepoModel, WebhookDeliveryModel } =
+const { BountyModel, ClaimModel, HunterModel, RepoModel, WebhookDeliveryModel } =
   await import('../shared/models/index.js');
 const { encryptToBuffer } = await import('../shared/crypto/tokenCrypto.js');
 
@@ -28,6 +28,8 @@ const REPO_ID = 4242;
 const PR_NUMBER = 7;
 const BOUNTY_ID = `0x${'a'.repeat(64)}`;
 const HUNTER = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
+const HUNTER_LOGIN = 'octohunter';
+const DEFAULT_BRANCH = 'main';
 const SIGNING_KEY = 'primary-test-signing-key';
 
 function sign(rawBody: string, key: string): string {
@@ -55,10 +57,32 @@ function postWebhook(opts: PostOpts): request.Test {
   return req.send(opts.body);
 }
 
-function mergedBody(prNumber = PR_NUMBER, sha = 'merge-sha-abc123'): string {
+function mergedBody(
+  opts: {
+    prNumber?: number;
+    sha?: string;
+    baseRef?: string;
+    baseRepoId?: number;
+    author?: string;
+  } = {},
+): string {
+  const {
+    prNumber = PR_NUMBER,
+    sha = 'merge-sha-abc123',
+    baseRef = DEFAULT_BRANCH,
+    baseRepoId = REPO_ID,
+    author = HUNTER_LOGIN,
+  } = opts;
   return JSON.stringify({
     action: 'closed',
-    pull_request: { number: prNumber, merged: true, merge_commit_sha: sha },
+    repository: { default_branch: DEFAULT_BRANCH },
+    pull_request: {
+      number: prNumber,
+      merged: true,
+      merge_commit_sha: sha,
+      base: { ref: baseRef, repo: { id: baseRepoId } },
+      user: { login: author },
+    },
   });
 }
 
@@ -76,6 +100,16 @@ async function seedRepo(overrides: Record<string, unknown> = {}): Promise<void> 
 }
 
 async function seedBountyAndClaim(): Promise<void> {
+  // The strict merge check requires the PR author to match the claiming hunter's
+  // linked GitHub login, so the hunter must exist with that login.
+  await HunterModel.create({
+    address: HUNTER,
+    githubLogin: HUNTER_LOGIN,
+    totalEarnedUsdc: '0',
+    payoutCount: 0,
+    reposContributed: 0,
+    languages: [],
+  });
   await BountyModel.create({
     bountyId: BOUNTY_ID,
     maintainerAddress: '0xmaintainer',
@@ -112,6 +146,7 @@ afterEach(async () => {
   await Promise.all([
     BountyModel.deleteMany({}),
     ClaimModel.deleteMany({}),
+    HunterModel.deleteMany({}),
     RepoModel.deleteMany({}),
     WebhookDeliveryModel.deleteMany({}),
   ]);
@@ -231,6 +266,36 @@ describe('POST /webhooks/github', () => {
       signature: sign(body, oldKey),
     });
     expect(res.status).toBe(401);
+  });
+
+  it('ignores a merge into a non-default branch', async () => {
+    await seedRepo();
+    await seedBountyAndClaim();
+    const body = mergedBody({ baseRef: 'release/v1' });
+    const res = await postWebhook({
+      body,
+      deliveryId: 'd-branch',
+      signature: sign(body, SIGNING_KEY),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.ignored).toMatch(/default branch/);
+    const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
+    expect(bounty?.lifecycleStatus).toBe('submitted');
+  });
+
+  it('ignores a merge whose PR author is not the claiming hunter', async () => {
+    await seedRepo();
+    await seedBountyAndClaim();
+    const body = mergedBody({ author: 'someone-else' });
+    const res = await postWebhook({
+      body,
+      deliveryId: 'd-author',
+      signature: sign(body, SIGNING_KEY),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.ignored).toMatch(/author/);
+    const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
+    expect(bounty?.lifecycleStatus).toBe('submitted');
   });
 
   it('ignores a non-merge pull request event', async () => {

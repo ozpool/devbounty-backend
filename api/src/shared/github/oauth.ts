@@ -4,6 +4,13 @@ const AUTHORIZE_URL = 'https://github.com/login/oauth/authorize';
 const TOKEN_URL = 'https://github.com/login/oauth/access_token';
 const API_BASE = 'https://api.github.com';
 
+// Abort any GitHub call that stalls, so a slow upstream can't pin a request
+// handler open indefinitely.
+const GITHUB_TIMEOUT_MS = 10_000;
+function ghSignal(): AbortSignal {
+  return AbortSignal.timeout(GITHUB_TIMEOUT_MS);
+}
+
 export class GithubError extends Error {}
 
 function callbackUrl(): string {
@@ -38,6 +45,7 @@ export async function exchangeCodeForToken(code: string): Promise<ExchangedToken
       code,
       redirect_uri: callbackUrl(),
     }),
+    signal: ghSignal(),
   });
   if (!res.ok) throw new GithubError(`Token exchange failed (${res.status})`);
   const data = (await res.json()) as { access_token?: string; scope?: string; error?: string };
@@ -57,6 +65,7 @@ export interface GithubUser {
 export async function fetchGitHubUser(accessToken: string): Promise<GithubUser> {
   const res = await fetch(`${API_BASE}/user`, {
     headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
+    signal: ghSignal(),
   });
   if (!res.ok) throw new GithubError(`Fetching GitHub user failed (${res.status})`);
   const data = (await res.json()) as { id?: number; login?: string };
@@ -72,31 +81,44 @@ export interface AdminRepo {
   private: boolean;
 }
 
-/** List repositories where the user has admin access (candidates for bounties). */
+/**
+ * List repositories where the user has admin access (candidates for bounties).
+ * Pages through the GitHub result set (100/page) so a user with more than 100
+ * repos doesn't silently lose the rest. Capped at MAX_REPO_PAGES as a backstop.
+ */
+const REPOS_PER_PAGE = 100;
+const MAX_REPO_PAGES = 10; // up to 1000 repos
+
 export async function listAdminRepos(accessToken: string): Promise<AdminRepo[]> {
-  const url = `${API_BASE}/user/repos?per_page=100&affiliation=owner,organization_member`;
-  const res = await fetch(url, {
-    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
-  });
-  if (!res.ok) throw new GithubError(`Listing repositories failed (${res.status})`);
-  const data = (await res.json()) as Array<{
-    full_name?: string;
-    id?: number;
-    private?: boolean;
-    permissions?: { admin?: boolean };
-  }>;
-  return data
-    .filter(
-      (r) =>
+  const out: AdminRepo[] = [];
+  for (let page = 1; page <= MAX_REPO_PAGES; page++) {
+    const url =
+      `${API_BASE}/user/repos?per_page=${REPOS_PER_PAGE}&page=${page}` +
+      `&affiliation=owner,organization_member`;
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
+      signal: ghSignal(),
+    });
+    if (!res.ok) throw new GithubError(`Listing repositories failed (${res.status})`);
+    const data = (await res.json()) as Array<{
+      full_name?: string;
+      id?: number;
+      private?: boolean;
+      permissions?: { admin?: boolean };
+    }>;
+    for (const r of data) {
+      if (
         r.permissions?.admin === true &&
         typeof r.full_name === 'string' &&
-        typeof r.id === 'number',
-    )
-    .map((r) => ({
-      fullName: r.full_name as string,
-      githubRepoId: r.id as number,
-      private: Boolean(r.private),
-    }));
+        typeof r.id === 'number'
+      ) {
+        out.push({ fullName: r.full_name, githubRepoId: r.id, private: Boolean(r.private) });
+      }
+    }
+    // A short page means we've reached the end of the result set.
+    if (data.length < REPOS_PER_PAGE) break;
+  }
+  return out;
 }
 
 export interface PullRequestState {
@@ -118,6 +140,7 @@ export async function fetchPullRequest(
 ): Promise<PullRequestState> {
   const res = await fetch(`${API_BASE}/repos/${owner}/${repo}/pulls/${prNumber}`, {
     headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
+    signal: ghSignal(),
   });
   if (!res.ok) throw new GithubError(`Fetching pull request failed (${res.status})`);
   const data = (await res.json()) as {
@@ -150,6 +173,7 @@ export async function fetchRepoMetadata(
 ): Promise<RepoMetadata> {
   const res = await fetch(`${API_BASE}/repos/${owner}/${repo}`, {
     headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
+    signal: ghSignal(),
   });
   if (!res.ok) throw new GithubError(`Fetching repository failed (${res.status})`);
   const data = (await res.json()) as { id?: number; full_name?: string };
@@ -181,6 +205,7 @@ export async function createRepoWebhook(
       events: ['pull_request'],
       config: { url: opts.url, content_type: 'json', secret: opts.secret },
     }),
+    signal: ghSignal(),
   });
   if (!res.ok) throw new GithubError(`Creating repository webhook failed (${res.status})`);
   const data = (await res.json()) as { id?: number };

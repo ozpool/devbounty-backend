@@ -10,7 +10,7 @@ import { generateSiweNonce } from 'viem/siwe';
 import { env } from '../../shared/config/env.js';
 import { signSession, signNonce, readNonce, sessionCookieMaxAgeMs } from '../../shared/auth/jwt.js';
 import { verifySiwe, SiweError } from '../../shared/auth/siwe.js';
-import { HunterModel } from '../../shared/models/index.js';
+import { HunterModel, NonceModel } from '../../shared/models/index.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -30,16 +30,25 @@ const verifyBody = z.object({
   signature: z.string().regex(/^0x[0-9a-fA-F]+$/, 'signature must be 0x-hex'),
 });
 
-// POST /auth/siwe/nonce — issue a nonce, carried in a short-lived signed cookie.
-router.post('/siwe/nonce', (req: Request, res: Response, next: NextFunction): void => {
-  if (!nonceBody.safeParse(req.body).success) {
-    next(AppError.badRequest('Invalid request body'));
-    return;
-  }
-  const nonce = generateSiweNonce();
-  res.cookie(NONCE_COOKIE, signNonce(nonce), { ...cookieOptions(), maxAge: 5 * 60 * 1000 });
-  res.json({ nonce });
-});
+// POST /auth/siwe/nonce — issue a nonce, carried in a short-lived signed cookie
+// and also recorded server-side so verify can consume it exactly once.
+router.post(
+  '/siwe/nonce',
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    if (!nonceBody.safeParse(req.body).success) {
+      next(AppError.badRequest('Invalid request body'));
+      return;
+    }
+    try {
+      const nonce = generateSiweNonce();
+      await NonceModel.create({ nonce });
+      res.cookie(NONCE_COOKIE, signNonce(nonce), { ...cookieOptions(), maxAge: 5 * 60 * 1000 });
+      res.json({ nonce });
+    } catch (err: unknown) {
+      next(err);
+    }
+  },
+);
 
 // POST /auth/siwe/verify — verify the signed message and start a session.
 router.post(
@@ -61,6 +70,15 @@ router.post(
       nonce = readNonce(nonceToken);
     } catch {
       next(AppError.unauthorized('Invalid or expired nonce'));
+      return;
+    }
+
+    // Consume the nonce server-side, atomically and exactly once. A replay (or a
+    // second tab reusing the same cookie) finds no row and is rejected, so a
+    // captured nonce + signature cannot be used to mint another session.
+    const consumed = await NonceModel.findOneAndDelete({ nonce });
+    if (!consumed) {
+      next(AppError.unauthorized('Nonce already used or expired'));
       return;
     }
 
