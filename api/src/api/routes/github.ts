@@ -118,7 +118,7 @@ router.get('/callback', async (req: Request, res: Response, next: NextFunction):
       { upsert: true },
     );
 
-    res.redirect(`${env.CORS_ORIGIN}/?github=linked`);
+    res.redirect(`${env.APP_BASE_URL}/?github=linked`);
   } catch (err: unknown) {
     if (err instanceof GithubError) {
       next(AppError.badRequest(err.message));

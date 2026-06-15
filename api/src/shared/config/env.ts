@@ -74,10 +74,15 @@ const chainEnv = z.object({
 const servicesEnv = z.object({
   // Bearer token for /health/internal — at least 16 chars in production.
   INTERNAL_HEALTH_TOKEN: secretInProd(16, 'test-internal-token'),
-  // Public base URL (used to build webhook callback URLs in later issues).
+  // Public base URL of THIS backend (used to build webhook + OAuth callback URLs).
   API_PUBLIC_BASE_URL: requiredInProd('http://localhost:4000'),
-  // Strict CORS origin — the web frontend origin.
+  // Strict CORS origin — the web frontend origin. Also the SIWE domain. This is a
+  // security allowlist value; do not reuse it as a redirect target.
   CORS_ORIGIN: requiredInProd('http://localhost:3000'),
+  // Frontend app base URL — where the browser is sent back after a flow completes
+  // (e.g. the post-OAuth landing). Kept separate from CORS_ORIGIN so the landing
+  // target can differ from the CORS allowlist without coupling the two.
+  APP_BASE_URL: requiredInProd('http://localhost:3000'),
 });
 
 const monitoringEnv = z.object({
@@ -106,11 +111,14 @@ const encryptionEnv = z.object({
 });
 
 const githubEnv = z.object({
-  // GitHub OAuth app credentials for account linking. The callback URL is derived
-  // from API_PUBLIC_BASE_URL.
+  // GitHub OAuth app credentials for account linking.
   GITHUB_OAUTH_CLIENT_ID: requiredInProd('test-github-client-id'),
   GITHUB_OAUTH_CLIENT_SECRET: requiredInProd('test-github-client-secret'),
   GITHUB_OAUTH_SCOPES: z.string().default('read:user repo'),
+  // Explicit OAuth callback URL. Must match the OAuth app's registered callback
+  // EXACTLY (GitHub rejects any mismatch). Optional: when absent it falls back to
+  // <API_PUBLIC_BASE_URL>/auth/github/callback.
+  GITHUB_OAUTH_CALLBACK_URL: z.string().optional(),
 });
 
 const schema = runtimeEnv
