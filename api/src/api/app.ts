@@ -7,7 +7,9 @@ import { httpLogger } from '../shared/utils/logger.js';
 import { errorMiddleware } from './middleware/error.js';
 import { healthRouter } from './routes/health.js';
 import { authRouter } from './routes/auth.js';
+import { githubAuthRouter } from './routes/github.js';
 import { meRouter } from './routes/me.js';
+import { reposRouter } from './routes/repos.js';
 
 export function createApp(): express.Application {
   const app = express();
@@ -59,7 +61,9 @@ export function createApp(): express.Application {
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);
   app.use('/auth', authRouter);
+  app.use('/auth/github', githubAuthRouter);
   app.use('/me', meRouter);
+  app.use('/repos', reposRouter);
 
   // ── Central error handler — MUST be last middleware ───────────────────────
   app.use(errorMiddleware);
