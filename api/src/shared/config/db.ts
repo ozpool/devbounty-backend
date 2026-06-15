@@ -1,0 +1,75 @@
+import mongoose from 'mongoose';
+import { env } from './env.js';
+import { logger } from '../utils/logger.js';
+
+// Hold a reference to the HTTP server so shutdown can drain connections first.
+// Set via registerServer() called from src/index.ts after listen().
+let _server: { close(cb: () => void): void } | null = null;
+
+export function registerServer(server: { close(cb: () => void): void }): void {
+  _server = server;
+}
+
+export async function connectDb(): Promise<void> {
+  mongoose.connection.on('connected', () => {
+    logger.info('MongoDB connected');
+  });
+
+  mongoose.connection.on('disconnected', () => {
+    logger.warn('MongoDB disconnected');
+  });
+
+  mongoose.connection.on('reconnected', () => {
+    logger.info('MongoDB reconnected');
+  });
+
+  mongoose.connection.on('error', (err: unknown) => {
+    logger.error({ err }, 'MongoDB connection error');
+  });
+
+  await mongoose.connect(env.MONGO_URI);
+}
+
+export async function disconnectDb(): Promise<void> {
+  await mongoose.disconnect();
+  logger.info('MongoDB disconnected cleanly');
+}
+
+// If draining hangs (a stuck keep-alive connection, a slow DB close), force the
+// process to exit rather than block the orchestrator's shutdown indefinitely.
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+async function shutdown(signal: string): Promise<void> {
+  logger.info({ signal }, 'Shutdown signal received — draining connections');
+
+  const forceTimer = setTimeout(() => {
+    logger.error({ timeoutMs: SHUTDOWN_TIMEOUT_MS }, 'Shutdown timed out — forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  // Don't let this timer itself keep the event loop alive.
+  forceTimer.unref();
+
+  await new Promise<void>((resolve) => {
+    if (_server) {
+      _server.close(() => resolve());
+    } else {
+      resolve();
+    }
+  });
+
+  await disconnectDb();
+  clearTimeout(forceTimer);
+  process.exit(0);
+}
+
+// Register once — idempotent if called multiple times (process listeners are
+// additive, so guard with a flag)
+let _shutdownRegistered = false;
+
+export function registerShutdownHandlers(): void {
+  if (_shutdownRegistered) return;
+  _shutdownRegistered = true;
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+}
