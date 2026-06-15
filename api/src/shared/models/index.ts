@@ -4,3 +4,4 @@ export * from './claim.model.js';
 export * from './hunter.model.js';
 export * from './reputationEvent.model.js';
 export * from './oauthToken.model.js';
+export * from './idempotencyKey.model.js';
