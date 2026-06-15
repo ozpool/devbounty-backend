@@ -1,0 +1,33 @@
+name: Feature
+description: New user-facing capability
+labels: ['type:feat', 'priority:P1']
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What problem does this solve and why?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+  - type: textarea
+    id: deps
+    attributes:
+      label: Dependencies
+      placeholder: 'Depends on #N · Blocks #M'
+  - type: textarea
+    id: notes
+    attributes:
+      label: Implementation notes

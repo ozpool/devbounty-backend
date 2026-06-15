@@ -1,0 +1,6 @@
+{
+  "name": "@devbounty/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DevBounty BountyEscrow smart contracts (Hardhat)."
+}

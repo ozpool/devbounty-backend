@@ -1,0 +1,7 @@
+{
+  "name": "@devbounty/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DevBounty Express API + chain indexer (two entrypoints, one package)."
+}
