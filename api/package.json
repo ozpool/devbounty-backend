@@ -6,7 +6,9 @@
   "description": "DevBounty Express API + chain indexer (two entrypoints, one package).",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:indexer": "tsx watch src/indexer/index.ts",
     "start:api": "node dist/index.js",
+    "start:indexer": "node dist/indexer/index.js",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",

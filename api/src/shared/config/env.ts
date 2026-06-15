@@ -44,6 +44,16 @@ const chainEnv = z.object({
   CHAIN_ID: z.coerce.number().int().positive().default(421614),
   RPC_URL_HTTP: requiredInProd('http://localhost:8545'),
   RPC_URL_HTTP_FALLBACK: z.string().optional(),
+  // The deployed BountyEscrow address. Optional until a deploy exists; payout
+  // and the indexer are inert without it.
+  ESCROW_ADDRESS: z.string().optional(),
+  // Backend hot-wallet key that signs release() txs (testnet custody is an env
+  // key; production moves to a KMS/HSM). Optional: absent disables on-chain payout.
+  BACKEND_PRIVATE_KEY: z.string().optional(),
+  // Reorg buffer: the indexer only processes events this many blocks behind head.
+  INDEXER_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(5),
+  // First block to scan on a cold start (the escrow's deploy block).
+  INDEXER_START_BLOCK: z.coerce.number().int().nonnegative().default(0),
 });
 
 const servicesEnv = z.object({

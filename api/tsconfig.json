@@ -3,7 +3,11 @@
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // Only Node's ambient types. Without this, tsc auto-includes every @types/*
+    // hoisted into the shared workspace node_modules (e.g. mocha from the
+    // contracts/Hardhat toolchain), which has nothing to do with the API.
+    "types": ["node"]
   },
   "include": ["src"]
 }

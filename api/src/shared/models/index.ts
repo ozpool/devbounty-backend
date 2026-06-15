@@ -7,3 +7,4 @@ export * from './oauthToken.model.js';
 export * from './idempotencyKey.model.js';
 export * from './repo.model.js';
 export * from './webhookDelivery.model.js';
+export * from './indexerState.model.js';
