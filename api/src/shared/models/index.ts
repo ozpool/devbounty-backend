@@ -5,3 +5,5 @@ export * from './hunter.model.js';
 export * from './reputationEvent.model.js';
 export * from './oauthToken.model.js';
 export * from './idempotencyKey.model.js';
+export * from './repo.model.js';
+export * from './webhookDelivery.model.js';
