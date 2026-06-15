@@ -6,6 +6,8 @@ import { logger } from '../../shared/utils/logger.js';
 import { AppError } from '../../shared/utils/AppError.js';
 import {
   runDependencyChecks,
+  readIndexerState,
+  buildIndexerHealth,
   sanitizeErrorMessage,
   MONGO_STATE_NAMES,
 } from '../../shared/utils/healthChecks.js';
@@ -31,6 +33,16 @@ router.get('/ready', async (_req: Request, res: Response, next: NextFunction): P
     const chainOk = 'value' in chainResult;
     const ok = dbOk && chainOk;
 
+    // Indexer lag is informational here: it is a separate singleton process, so a
+    // stale indexer must not flip this API instance's readiness. null until it runs.
+    const headBlock = chainOk ? (chainResult as { value: bigint }).value : null;
+    const indexerLag = buildIndexerHealth(
+      await readIndexerState(),
+      headBlock,
+      env.INDEXER_STALE_AFTER_MS,
+      Date.now(),
+    );
+
     res.status(ok ? 200 : 503).json({
       ok,
       // Public endpoint: report status only, never the upstream error detail.
@@ -42,8 +54,7 @@ router.get('/ready', async (_req: Request, res: Response, next: NextFunction): P
             latencyMs: chainResult.ms,
           }
         : { status: 'error', latencyMs: chainResult.ms },
-      // Indexer lag tracking is wired when the indexer ships (later issue)
-      indexerLag: null,
+      indexerLag,
     });
   } catch (err: unknown) {
     next(err);
@@ -68,6 +79,14 @@ router.get('/internal', async (req: Request, res: Response, next: NextFunction):
     const { dbResult, chainResult } = await runDependencyChecks();
     const mongoState = mongoose.connection.readyState;
 
+    const headBlock = 'value' in chainResult ? chainResult.value : null;
+    const indexer = buildIndexerHealth(
+      await readIndexerState(),
+      headBlock,
+      env.INDEXER_STALE_AFTER_MS,
+      Date.now(),
+    );
+
     logger.info('Internal health check requested');
 
     res.status(200).json({
@@ -86,8 +105,7 @@ router.get('/internal', async (req: Request, res: Response, next: NextFunction):
               error: 'error' in chainResult ? sanitizeErrorMessage(chainResult.error) : 'unknown',
               latencyMs: chainResult.ms,
             },
-      // Indexer state not yet implemented — null is honest
-      indexer: null,
+      indexer,
     });
   } catch (err: unknown) {
     next(err);

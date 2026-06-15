@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { createPublicClient, http, type PublicClient } from 'viem';
 import { env } from '../config/env.js';
+import { IndexerStateModel } from '../models/indexerState.model.js';
 
 // ── Timed results ──────────────────────────────────────────────────────────────
 
@@ -88,6 +89,61 @@ export const MONGO_STATE_NAMES: Record<number, string> = {
 export interface DependencyChecks {
   dbResult: TimedResult<boolean>;
   chainResult: TimedResult<bigint>;
+}
+
+// ── Indexer heartbeat / lag ──────────────────────────────────────────────────
+
+export interface IndexerStateSnapshot {
+  lastBlock: number;
+  updatedAt?: Date;
+  lastEventAt?: Date;
+}
+
+export interface IndexerHealth {
+  lastBlock: number;
+  lastEventAt: string | null;
+  updatedAt: string | null;
+  heartbeatAgeMs: number | null; // how long since the checkpoint last advanced
+  lagBlocks: number | null; // chain head minus the indexed block, when head is known
+  stale: boolean; // heartbeat older than the configured threshold (or never seen)
+}
+
+/** Read the singleton indexer checkpoint, or null when it has never run / DB is down. */
+export async function readIndexerState(): Promise<IndexerStateSnapshot | null> {
+  if (mongoose.connection.readyState !== 1) return null;
+  try {
+    const row = await IndexerStateModel.findById('singleton').lean();
+    if (!row) return null;
+    return { lastBlock: row.lastBlock, updatedAt: row.updatedAt, lastEventAt: row.lastEventAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Assemble the reported indexer health from a checkpoint snapshot and the current
+ * chain head. Pure (clock and head injected) so the lag/staleness logic is unit
+ * testable. Returns null when the indexer has no checkpoint yet.
+ */
+export function buildIndexerHealth(
+  state: IndexerStateSnapshot | null,
+  headBlock: bigint | null,
+  staleAfterMs: number,
+  now: number,
+): IndexerHealth | null {
+  if (!state) return null;
+  const updatedMs = state.updatedAt ? state.updatedAt.getTime() : null;
+  const heartbeatAgeMs = updatedMs === null ? null : now - updatedMs;
+  const lagBlocks = headBlock === null ? null : Number(headBlock) - state.lastBlock;
+  const stale = heartbeatAgeMs === null || heartbeatAgeMs > staleAfterMs;
+  return {
+    lastBlock: state.lastBlock,
+    lastEventAt: state.lastEventAt ? state.lastEventAt.toISOString() : null,
+    updatedAt: state.updatedAt ? state.updatedAt.toISOString() : null,
+    heartbeatAgeMs,
+    lagBlocks,
+    stale,
+  };
 }
 
 /** Run the DB ping and chain block-number read concurrently, each time-boxed. */

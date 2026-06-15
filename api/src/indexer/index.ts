@@ -11,7 +11,11 @@ import { handleBountyCreated, handleBountyReleased, handleBountyRefunded } from 
 
 const STATE_ID = 'singleton';
 const POLL_INTERVAL_MS = 5_000;
-const MAX_RANGE = 2_000n; // blocks scanned per getLogs call, to stay under RPC limits
+// When still behind head (the per-call range cap was hit), poll again quickly so
+// a small range cap can still keep pace with a fast chain instead of falling
+// permanently behind.
+const CATCHUP_INTERVAL_MS = 500;
+const MAX_RANGE = BigInt(env.INDEXER_MAX_RANGE); // blocks per getLogs call (RPC-tier limited)
 const BACKOFF_CAP_MS = 30_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -51,14 +55,18 @@ async function scanRange(escrow: Address, fromBlock: bigint, toBlock: bigint): P
 }
 
 // Advance once: scan the next confirmed, range-capped window and checkpoint it.
-async function tick(escrow: Address): Promise<void> {
+// Returns true while still behind the confirmed head (range cap was hit), so the
+// caller can poll again immediately instead of waiting a full interval.
+async function tick(escrow: Address): Promise<boolean> {
   const head = await getPublicClient().getBlockNumber();
   const confirmed = head - BigInt(env.INDEXER_CONFIRMATIONS);
   const last = await loadLastBlock();
-  if (confirmed <= last) return;
-  const to = last + MAX_RANGE < confirmed ? last + MAX_RANGE : confirmed;
+  if (confirmed <= last) return false;
+  const capped = last + MAX_RANGE < confirmed;
+  const to = capped ? last + MAX_RANGE : confirmed;
   await scanRange(escrow, last + 1n, to);
   await saveLastBlock(to);
+  return capped;
 }
 
 export async function startIndexer(): Promise<void> {
@@ -75,9 +83,9 @@ export async function startIndexer(): Promise<void> {
   let backoff = POLL_INTERVAL_MS;
   for (;;) {
     try {
-      await tick(escrow);
+      const behind = await tick(escrow);
       backoff = POLL_INTERVAL_MS; // healthy poll resets the backoff
-      await sleep(POLL_INTERVAL_MS);
+      await sleep(behind ? CATCHUP_INTERVAL_MS : POLL_INTERVAL_MS);
     } catch (err: unknown) {
       logger.error(
         { err: err instanceof Error ? err.message : String(err) },

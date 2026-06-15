@@ -28,3 +28,9 @@ Thumbs.db
 
 # next (not used in backend, defensive)
 .next/
+
+# Local deploy addresses (per-run, machine-local)
+contracts/deployments/
+
+# Local dev launcher (machine-local; not part of the published API)
+run-local.mts

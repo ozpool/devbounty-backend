@@ -3,16 +3,25 @@ export class AppError extends Error {
   readonly code: string;
   override readonly message: string;
   override readonly cause: unknown;
+  /** Optional structured detail (e.g. per-field validation errors) safe to show the client. */
+  readonly details?: unknown;
   /** True for all AppError instances — distinguishes operational errors from bugs. */
   readonly isOperational = true;
 
-  constructor(opts: { statusCode: number; code: string; message: string; cause?: unknown }) {
+  constructor(opts: {
+    statusCode: number;
+    code: string;
+    message: string;
+    cause?: unknown;
+    details?: unknown;
+  }) {
     super(opts.message);
     this.name = 'AppError';
     this.statusCode = opts.statusCode;
     this.code = opts.code;
     this.message = opts.message;
     this.cause = opts.cause;
+    this.details = opts.details;
 
     // Restore prototype chain (needed when targeting ES5/ES2015 with extends)
     Object.setPrototypeOf(this, new.target.prototype);
@@ -30,12 +39,16 @@ export class AppError extends Error {
     return new AppError({ statusCode: 403, code: 'FORBIDDEN', message, cause });
   }
 
-  static badRequest(message: string, cause?: unknown): AppError {
-    return new AppError({ statusCode: 400, code: 'BAD_REQUEST', message, cause });
+  static badRequest(message: string, details?: unknown, cause?: unknown): AppError {
+    return new AppError({ statusCode: 400, code: 'BAD_REQUEST', message, details, cause });
   }
 
   static conflict(message: string, cause?: unknown): AppError {
     return new AppError({ statusCode: 409, code: 'CONFLICT', message, cause });
+  }
+
+  static tooManyRequests(message = 'Too many requests', cause?: unknown): AppError {
+    return new AppError({ statusCode: 429, code: 'RATE_LIMITED', message, cause });
   }
 
   static internal(message = 'Internal server error', cause?: unknown): AppError {

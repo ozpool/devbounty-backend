@@ -103,9 +103,11 @@ describe('leaderboard', () => {
     const res = await request(createApp()).get('/leaderboard?lang=go');
     expect(res.status).toBe(200);
     expect(res.body.items).toHaveLength(2);
-    expect(res.body.items[0].hunterAddress).toBe(A);
+    expect(res.body.items[0].address).toBe(A);
+    expect(res.body.items[0].rank).toBe(1);
     expect(res.body.items[0].totalEarnedUsdc).toBe('300');
-    expect(res.body.items[1].hunterAddress).toBe(B);
+    expect(res.body.items[1].address).toBe(B);
+    expect(res.body.items[1].rank).toBe(2);
   });
 
   it('filters by language', async () => {
@@ -113,6 +115,6 @@ describe('leaderboard', () => {
     await seedPayout(B, '500', 'typescript');
     const res = await request(createApp()).get('/leaderboard?lang=rust');
     expect(res.body.items).toHaveLength(1);
-    expect(res.body.items[0].hunterAddress).toBe(A);
+    expect(res.body.items[0].address).toBe(A);
   });
 });

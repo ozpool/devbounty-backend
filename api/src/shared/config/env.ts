@@ -52,8 +52,15 @@ const chainEnv = z.object({
   BACKEND_PRIVATE_KEY: z.string().optional(),
   // Reorg buffer: the indexer only processes events this many blocks behind head.
   INDEXER_CONFIRMATIONS: z.coerce.number().int().nonnegative().default(5),
+  // Max blocks scanned per getLogs call. Public/free RPC tiers cap this hard
+  // (Alchemy free allows only 10), so it is configurable per environment.
+  INDEXER_MAX_RANGE: z.coerce.number().int().positive().default(2000),
   // First block to scan on a cold start (the escrow's deploy block).
   INDEXER_START_BLOCK: z.coerce.number().int().nonnegative().default(0),
+  // Health marks the indexer stale once its checkpoint heartbeat is older than
+  // this. The indexer is a separate singleton process, so this is reported by the
+  // API's health endpoint but never gates the API's own readiness.
+  INDEXER_STALE_AFTER_MS: z.coerce.number().int().positive().default(60_000),
 });
 
 const servicesEnv = z.object({
@@ -68,6 +75,17 @@ const servicesEnv = z.object({
 const monitoringEnv = z.object({
   // Optional; Sentry is a no-op when absent.
   SENTRY_DSN: z.string().optional(),
+});
+
+const rateLimitEnv = z.object({
+  // Auth endpoints are the cheapest to abuse (nonce/verify spam, credential
+  // probing), so they get the tighter cap, keyed by client IP.
+  RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
+  RATE_LIMIT_AUTH_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  // State-changing routes are capped per authenticated wallet (falling back to
+  // IP when unauthenticated) so one signed-in user cannot flood writes.
+  RATE_LIMIT_MUTATION_MAX: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_MUTATION_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 });
 
 const encryptionEnv = z.object({
@@ -94,7 +112,8 @@ const schema = runtimeEnv
   .merge(servicesEnv)
   .merge(monitoringEnv)
   .merge(encryptionEnv)
-  .merge(githubEnv);
+  .merge(githubEnv)
+  .merge(rateLimitEnv);
 
 export type Env = z.infer<typeof schema>;
 

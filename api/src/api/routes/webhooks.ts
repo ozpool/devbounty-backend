@@ -1,16 +1,10 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { pad, type Address, type Hex } from 'viem';
 import { logger } from '../../shared/utils/logger.js';
 import { AppError } from '../../shared/utils/AppError.js';
 import { verifyWebhookSignature } from '../../shared/github/webhook.js';
-import { isPayoutConfigured } from '../../shared/chain/clients.js';
-import { releaseBounty, buildReleaseDeps } from '../../shared/chain/payout.js';
-import {
-  BountyModel,
-  ClaimModel,
-  RepoModel,
-  WebhookDeliveryModel,
-} from '../../shared/models/index.js';
+import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
+import { writeAudit } from '../../shared/audit/writeAudit.js';
+import { ClaimModel, RepoModel, WebhookDeliveryModel } from '../../shared/models/index.js';
 
 const router = Router();
 
@@ -117,61 +111,20 @@ async function processDelivery(
   if (!claim) return { matched: false };
 
   const mergeCommitSha = typeof pr.merge_commit_sha === 'string' ? pr.merge_commit_sha : undefined;
-  if (mergeCommitSha) {
-    claim.prCommitSha = mergeCommitSha;
-    await claim.save();
-  }
 
-  // Move the bounty into 'releasing' only from 'submitted', so a redelivery
-  // never clobbers a state the indexer has since advanced (paid/refunded).
-  await BountyModel.updateOne(
-    { bountyId: claim.bountyId, lifecycleStatus: 'submitted' },
-    { $set: { lifecycleStatus: 'releasing' } },
-  );
+  // Hand off to the shared settlement path (also used by manual-release): records
+  // the merge commit, advances the bounty to 'releasing', and releases on-chain
+  // when a signer is configured.
+  await settleMergedClaim(claim.bountyId, claim.hunterAddress, mergeCommitSha);
 
-  // The webhook path owns the on-chain release() write (the indexer only reads).
-  // When no signer/escrow is configured (dev, tests) the bounty simply rests in
-  // 'releasing' with the merge commit recorded. When configured, send the release
-  // and let the chain indexer flip the bounty to 'paid' on the BountyReleased event.
-  if (isPayoutConfigured() && claim.prCommitSha) {
-    await attemptRelease(claim.bountyId, claim.hunterAddress, claim.prCommitSha);
-  }
+  // System actor: the merge was confirmed by a signature-verified GitHub delivery.
+  await writeAudit({
+    action: 'bounty.settled_via_webhook',
+    target: { type: 'bounty', id: claim.bountyId },
+    metadata: { prNumber: pr.number, hunterAddress: claim.hunterAddress },
+  });
 
   return { matched: true, bountyId: claim.bountyId };
-}
-
-// Pad a git commit SHA (20-byte SHA-1 or 32-byte SHA-256) into the bytes32 the
-// contract's release() expects, value left-aligned.
-function shaToBytes32(sha: string): Hex {
-  const hex = (sha.startsWith('0x') ? sha : `0x${sha}`) as Hex;
-  return pad(hex, { size: 32, dir: 'right' });
-}
-
-// Send the on-chain release. Errors are logged (never swallowed) and the bounty
-// is moved to 'release_failed' for reconciliation; on success the tx hash is
-// recorded and the indexer advances the bounty to 'paid'.
-async function attemptRelease(
-  bountyId: string,
-  hunter: string,
-  prCommitSha: string,
-): Promise<void> {
-  try {
-    const { txHash } = await releaseBounty(
-      {
-        bountyId: bountyId as Hex,
-        hunter: hunter as Address,
-        prCommitSha: shaToBytes32(prCommitSha),
-      },
-      buildReleaseDeps(),
-    );
-    await BountyModel.updateOne({ bountyId }, { $set: { txRelease: txHash } });
-  } catch (err: unknown) {
-    logger.error(
-      { bountyId, err: err instanceof Error ? err.message : String(err) },
-      'on-chain release failed',
-    );
-    await BountyModel.updateOne({ bountyId }, { $set: { lifecycleStatus: 'release_failed' } });
-  }
 }
 
 export { router as webhooksRouter };

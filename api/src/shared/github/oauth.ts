@@ -98,3 +98,92 @@ export async function listAdminRepos(accessToken: string): Promise<AdminRepo[]> 
       private: Boolean(r.private),
     }));
 }
+
+export interface PullRequestState {
+  merged: boolean;
+  mergeCommitSha?: string;
+  baseRepoId?: number;
+}
+
+/**
+ * Fetch a pull request's merge state. Used by the maintainer manual-release path
+ * to confirm a merge directly with GitHub when the webhook did not arrive — the
+ * same trust source as the webhook, just pulled instead of pushed.
+ */
+export async function fetchPullRequest(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  accessToken: string,
+): Promise<PullRequestState> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}/pulls/${prNumber}`, {
+    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) throw new GithubError(`Fetching pull request failed (${res.status})`);
+  const data = (await res.json()) as {
+    merged?: boolean;
+    merge_commit_sha?: string | null;
+    base?: { repo?: { id?: number } };
+  };
+  return {
+    merged: data.merged === true,
+    mergeCommitSha: typeof data.merge_commit_sha === 'string' ? data.merge_commit_sha : undefined,
+    baseRepoId: data.base?.repo?.id,
+  };
+}
+
+export interface RepoMetadata {
+  id: number;
+  fullName: string;
+}
+
+/**
+ * Resolve a repo's canonical numeric id from its owner/name using the caller's
+ * token. Resolving server-side (rather than trusting an id from the request body)
+ * proves the caller can actually see the repo and prevents binding our records to
+ * a repo id the caller does not control.
+ */
+export async function fetchRepoMetadata(
+  owner: string,
+  repo: string,
+  accessToken: string,
+): Promise<RepoMetadata> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}`, {
+    headers: { authorization: `Bearer ${accessToken}`, accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) throw new GithubError(`Fetching repository failed (${res.status})`);
+  const data = (await res.json()) as { id?: number; full_name?: string };
+  if (typeof data.id !== 'number') throw new GithubError('Malformed repository response');
+  return { id: data.id, fullName: data.full_name ?? `${owner}/${repo}` };
+}
+
+/**
+ * Install a pull_request webhook on a repo, pointing at our ingest URL and signed
+ * with the given per-repo secret. Returns GitHub's hook id, which becomes the
+ * lookup key (X-GitHub-Hook-ID) the ingest path matches deliveries against.
+ */
+export async function createRepoWebhook(
+  owner: string,
+  repo: string,
+  accessToken: string,
+  opts: { url: string; secret: string },
+): Promise<{ id: number }> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}/hooks`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: 'application/vnd.github+json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: 'web',
+      active: true,
+      events: ['pull_request'],
+      config: { url: opts.url, content_type: 'json', secret: opts.secret },
+    }),
+  });
+  if (!res.ok) throw new GithubError(`Creating repository webhook failed (${res.status})`);
+  const data = (await res.json()) as { id?: number };
+  if (typeof data.id !== 'number') throw new GithubError('Malformed webhook creation response');
+  return { id: data.id };
+}

@@ -12,7 +12,8 @@ export type BountyLifecycleStatus =
   | 'releasing'
   | 'paid'
   | 'refunded'
-  | 'release_failed';
+  | 'release_failed'
+  | 'cancelled';
 
 export interface BountyRepo {
   owner: string;
@@ -80,6 +81,7 @@ const bountySchema = new Schema<Bounty>(
         'paid',
         'refunded',
         'release_failed',
+        'cancelled',
       ],
       default: 'pending_deposit',
       required: true,
