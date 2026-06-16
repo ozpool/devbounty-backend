@@ -136,13 +136,16 @@ async function processDelivery(
     return { ignored: 'pr not merged into the default branch' };
   }
 
-  const hunter = await HunterModel.findOne({ address: claim.hunterAddress }).lean();
+  // Match the PR author against the login snapshotted on the claim at submit time
+  // (not the live Hunter doc), so a later unlink/relink can't break this payout.
+  // Legacy claims with no snapshot fall back to the hunter's current login.
+  let expectedLogin = claim.githubLoginAtSubmit;
+  if (!expectedLogin) {
+    const hunter = await HunterModel.findOne({ address: claim.hunterAddress }).lean();
+    expectedLogin = hunter?.githubLogin;
+  }
   const prAuthor = pr.user?.login;
-  if (
-    !hunter?.githubLogin ||
-    !prAuthor ||
-    prAuthor.toLowerCase() !== hunter.githubLogin.toLowerCase()
-  ) {
+  if (!expectedLogin || !prAuthor || prAuthor.toLowerCase() !== expectedLogin.toLowerCase()) {
     return { ignored: 'pr author is not the claiming hunter' };
   }
 

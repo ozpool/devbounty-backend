@@ -146,6 +146,20 @@ describe('claims', () => {
     expect(dup.status).toBe(409);
   });
 
+  it('snapshots the hunter github login onto the claim at submit time', async () => {
+    const app = createApp();
+    const bountyId = await makeBounty();
+    await linkGithub(HUNTER, 'snapshot-login');
+    await request(app).post(`/bounties/${bountyId}/claim`).set('Cookie', COOKIE);
+    const submit = await request(app)
+      .post(`/bounties/${bountyId}/submit`)
+      .set('Cookie', COOKIE)
+      .send({ prUrl: 'https://github.com/o/n/pull/77' });
+    expect(submit.status).toBe(200);
+    const claim = await ClaimModel.findOne({ bountyId }).lean();
+    expect(claim?.githubLoginAtSubmit).toBe('snapshot-login');
+  });
+
   it('releases early, then enforces the re-claim cooldown', async () => {
     const app = createApp();
     const bountyId = await makeBounty();

@@ -191,9 +191,14 @@ router.post('/:id/submit', requireAuth, async (req: Request, res: Response, next
       next(AppError.forbidden('No active claim to submit against'));
       return;
     }
+    // Snapshot the hunter's GitHub identity now, so the merge-time author check
+    // is pinned to who they were at submit and survives a later unlink/relink.
+    const hunter = await HunterModel.findOne({ address }).lean();
     claim.prUrl = prUrl;
     claim.prNumber = prNumber;
     claim.repoIdAtSubmit = bounty.repo.githubRepoId;
+    claim.githubLoginAtSubmit = hunter?.githubLogin;
+    claim.githubUserIdAtSubmit = hunter?.githubUserId;
     claim.status = 'submitted';
     await claim.save();
     await BountyModel.updateOne({ bountyId }, { $set: { lifecycleStatus: 'submitted' } });

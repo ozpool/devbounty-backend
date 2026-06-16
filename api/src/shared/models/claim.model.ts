@@ -11,6 +11,11 @@ export interface Claim {
   prUrl?: string;
   prNumber?: number;
   repoIdAtSubmit?: number; // GitHub numeric repo id captured at submit time
+  // GitHub identity snapshotted at submit time. The merge author check compares
+  // against this, not the live Hunter doc, so a later unlink/relink can't strand
+  // an in-flight payout (the wallet recipient is already fixed via hunterAddress).
+  githubLoginAtSubmit?: string;
+  githubUserIdAtSubmit?: number;
   prCommitSha?: string; // pr.merge_commit_sha once merged
   createdAt?: Date;
   updatedAt?: Date;
@@ -30,6 +35,8 @@ const claimSchema = new Schema<Claim>(
     prUrl: { type: String },
     prNumber: { type: Number },
     repoIdAtSubmit: { type: Number },
+    githubLoginAtSubmit: { type: String },
+    githubUserIdAtSubmit: { type: Number },
     prCommitSha: { type: String },
   },
   { timestamps: true },
