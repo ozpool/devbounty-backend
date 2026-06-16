@@ -50,6 +50,10 @@ function toBountyDto(b: Bounty) {
     pendingConfirmation: PENDING_CONFIRMATION.has(b.lifecycleStatus),
     refundWindowSnapshot: b.refundWindowSnapshot,
     hunterAddress: b.hunterAddress ?? null,
+    // On-chain transaction hashes for the UI to link to a block explorer.
+    txCreate: b.txCreate ?? null,
+    txRelease: b.txRelease ?? null,
+    txRefund: b.txRefund ?? null,
     createdAt: b.createdAt ?? null,
   };
 }
