@@ -84,6 +84,17 @@ describe('GitHub OAuth linking', () => {
     expect(res.headers.location).toContain('state=');
   });
 
+  it('forces GitHubs account chooser with ?switch=1', async () => {
+    const res = await request(createApp()).get('/auth/github/start?switch=1').set('Cookie', COOKIE);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('prompt=consent');
+  });
+
+  it('does not force the chooser on a normal link', async () => {
+    const res = await request(createApp()).get('/auth/github/start').set('Cookie', COOKIE);
+    expect(res.headers.location).not.toContain('prompt=');
+  });
+
   it('rejects /auth/github/start without a session', async () => {
     const res = await request(createApp()).get('/auth/github/start');
     expect(res.status).toBe(401);

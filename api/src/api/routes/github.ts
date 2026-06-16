@@ -54,12 +54,15 @@ function redirectLinkError(res: Response, reason: string): void {
   res.redirect(`${env.APP_BASE_URL}/?github=error&reason=${reason}`);
 }
 
-// GET /auth/github/start — redirect the logged-in wallet to GitHub's consent screen.
+// GET /auth/github/start — redirect the logged-in wallet to GitHub's consent
+// screen. `?switch=1` forces GitHub's authorize screen to re-appear so the user
+// can pick/confirm a different account instead of silently reusing the session.
 router.get('/start', requireAuth, (req: Request, res: Response): void => {
   const { address } = getAuth(req);
   const nonce = randomBytes(16).toString('hex');
   res.cookie(STATE_NONCE_COOKIE, nonce, nonceCookieOptions());
-  res.redirect(buildAuthorizeUrl(signGithubState(address, nonce)));
+  const forcePrompt = req.query.switch === '1';
+  res.redirect(buildAuthorizeUrl(signGithubState(address, nonce), { forcePrompt }));
 });
 
 const callbackQuery = z.object({ code: z.string().min(1), state: z.string().min(1) });

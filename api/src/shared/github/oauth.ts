@@ -19,8 +19,14 @@ function callbackUrl(): string {
   return env.GITHUB_OAUTH_CALLBACK_URL ?? `${env.API_PUBLIC_BASE_URL}/auth/github/callback`;
 }
 
-/** Build the GitHub authorize URL the browser is redirected to. */
-export function buildAuthorizeUrl(state: string): string {
+/**
+ * Build the GitHub authorize URL the browser is redirected to. With
+ * `forcePrompt`, ask GitHub to re-show its authorize screen rather than silently
+ * reusing the active github.com session, so the user can confirm or switch which
+ * account they link. (GitHub may still honor only its session; the UI pairs this
+ * with a sign-out hint as the reliable fallback.)
+ */
+export function buildAuthorizeUrl(state: string, opts: { forcePrompt?: boolean } = {}): string {
   const params = new URLSearchParams({
     client_id: env.GITHUB_OAUTH_CLIENT_ID,
     redirect_uri: callbackUrl(),
@@ -28,6 +34,7 @@ export function buildAuthorizeUrl(state: string): string {
     state,
     allow_signup: 'false',
   });
+  if (opts.forcePrompt) params.set('prompt', 'consent');
   return `${AUTHORIZE_URL}?${params.toString()}`;
 }
 
