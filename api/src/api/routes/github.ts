@@ -45,6 +45,14 @@ function isDuplicateKeyError(err: unknown): boolean {
   );
 }
 
+// The link flow is a full-page browser redirect, so a failure must hand control
+// back to the app with a reason in the query string. Returning a JSON error here
+// would strand the user on the API origin; instead the frontend reads `reason`
+// and shows a proper message. Kept to known, non-sensitive reason codes.
+function redirectLinkError(res: Response, reason: string): void {
+  res.redirect(`${env.APP_BASE_URL}/?github=error&reason=${reason}`);
+}
+
 // GET /auth/github/start — redirect the logged-in wallet to GitHub's consent screen.
 router.get('/start', requireAuth, (req: Request, res: Response): void => {
   const { address } = getAuth(req);
@@ -90,7 +98,7 @@ router.get('/callback', async (req: Request, res: Response, next: NextFunction):
     // wallets bound to one GitHub id, breaking the 1:1 binding the Sybil gate needs.
     const existingLink = await OAuthTokenModel.findOne({ githubUserId: ghUser.id }).lean();
     if (existingLink?.linkedAddress && existingLink.linkedAddress !== address) {
-      next(AppError.conflict('This GitHub account is already linked to a different wallet'));
+      redirectLinkError(res, 'already_linked');
       return;
     }
 
@@ -121,11 +129,11 @@ router.get('/callback', async (req: Request, res: Response, next: NextFunction):
     res.redirect(`${env.APP_BASE_URL}/?github=linked`);
   } catch (err: unknown) {
     if (err instanceof GithubError) {
-      next(AppError.badRequest(err.message));
+      redirectLinkError(res, 'link_failed');
       return;
     }
     if (isDuplicateKeyError(err)) {
-      next(AppError.conflict('This wallet is already linked to a different GitHub account'));
+      redirectLinkError(res, 'wallet_already_linked');
       return;
     }
     next(err);
