@@ -138,4 +138,31 @@ describe('GitHub OAuth linking', () => {
     const res = await request(createApp()).get('/repos').set('Cookie', COOKIE);
     expect(res.status).toBe(400);
   });
+
+  it('unlinks the caller GitHub account and clears the hunter identity', async () => {
+    installFetchMock();
+    const agent = request.agent(createApp());
+    const state = await startLink(agent);
+    await agent.get(`/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`);
+    expect(await OAuthTokenModel.findOne({ linkedAddress: ADDRESS }).lean()).not.toBeNull();
+
+    const res = await agent.delete('/auth/github/link').set('Cookie', COOKIE);
+    expect(res.status).toBe(200);
+    expect(res.body.unlinked).toBe(true);
+    expect(await OAuthTokenModel.findOne({ linkedAddress: ADDRESS }).lean()).toBeNull();
+    const hunter = await HunterModel.findOne({ address: ADDRESS }).lean();
+    expect(hunter?.githubLogin).toBeUndefined();
+    expect(hunter?.githubUserId).toBeUndefined();
+  });
+
+  it('rejects unlink without a session', async () => {
+    const res = await request(createApp()).delete('/auth/github/link');
+    expect(res.status).toBe(401);
+  });
+
+  it('treats unlink as idempotent when nothing is linked', async () => {
+    const res = await request(createApp()).delete('/auth/github/link').set('Cookie', COOKIE);
+    expect(res.status).toBe(200);
+    expect(res.body.unlinked).toBe(false);
+  });
 });
