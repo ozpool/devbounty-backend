@@ -14,7 +14,9 @@ function ghSignal(): AbortSignal {
 export class GithubError extends Error {}
 
 function callbackUrl(): string {
-  return `${env.API_PUBLIC_BASE_URL}/auth/github/callback`;
+  // Prefer the explicit override so the redirect_uri matches the OAuth app's
+  // registered callback exactly; fall back to deriving it from the backend's URL.
+  return env.GITHUB_OAUTH_CALLBACK_URL ?? `${env.API_PUBLIC_BASE_URL}/auth/github/callback`;
 }
 
 /** Build the GitHub authorize URL the browser is redirected to. */
