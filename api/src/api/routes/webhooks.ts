@@ -4,7 +4,9 @@ import { AppError } from '../../shared/utils/AppError.js';
 import { verifyWebhookSignature } from '../../shared/github/webhook.js';
 import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
 import { writeAudit } from '../../shared/audit/writeAudit.js';
+import { extractIssueRefs } from '../../shared/github/oauth.js';
 import {
+  BountyModel,
   ClaimModel,
   HunterModel,
   RepoModel,
@@ -25,6 +27,8 @@ interface PullRequestPayload {
     merge_commit_sha?: string | null;
     base?: { ref?: string; repo?: { id?: number } };
     user?: { login?: string };
+    title?: string;
+    body?: string | null;
   };
 }
 
@@ -147,6 +151,22 @@ async function processDelivery(
   const prAuthor = pr.user?.login;
   if (!expectedLogin || !prAuthor || prAuthor.toLowerCase() !== expectedLogin.toLowerCase()) {
     return { ignored: 'pr author is not the claiming hunter' };
+  }
+
+  // The merged PR must address the bounty's issue. We only have the signed
+  // payload here (no token), so match `#N` references in the PR title/body
+  // against the bounty's issue number. Fail closed: a PR that does not reference
+  // this issue pays nobody — the maintainer can still manual-release if a fix was
+  // linked only via GitHub's UI rather than the PR text.
+  const bounty = await BountyModel.findOne({ bountyId: claim.bountyId }).lean();
+  const refs = extractIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`);
+  if (!bounty || !refs.includes(bounty.issueNumber)) {
+    await writeAudit({
+      action: 'bounty.merge_issue_mismatch',
+      target: { type: 'bounty', id: claim.bountyId },
+      metadata: { prNumber: pr.number, expectedIssue: bounty?.issueNumber, referenced: refs },
+    });
+    return { ignored: 'pr does not reference the bounty issue' };
   }
 
   const mergeCommitSha = typeof pr.merge_commit_sha === 'string' ? pr.merge_commit_sha : undefined;

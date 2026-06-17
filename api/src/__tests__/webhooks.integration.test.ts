@@ -64,6 +64,7 @@ function mergedBody(
     baseRef?: string;
     baseRepoId?: number;
     author?: string;
+    body?: string;
   } = {},
 ): string {
   const {
@@ -72,6 +73,8 @@ function mergedBody(
     baseRef = DEFAULT_BRANCH,
     baseRepoId = REPO_ID,
     author = HUNTER_LOGIN,
+    // The seeded bounty is for issue #1, so reference it by default.
+    body = 'Fixes #1',
   } = opts;
   return JSON.stringify({
     action: 'closed',
@@ -82,6 +85,7 @@ function mergedBody(
       merge_commit_sha: sha,
       base: { ref: baseRef, repo: { id: baseRepoId } },
       user: { login: author },
+      body,
     },
   });
 }
@@ -294,6 +298,21 @@ describe('POST /webhooks/github', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.ignored).toMatch(/author/);
+    const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
+    expect(bounty?.lifecycleStatus).toBe('submitted');
+  });
+
+  it('pays nobody when the merged PR is for a different issue', async () => {
+    await seedRepo();
+    await seedBountyAndClaim(); // bounty is for issue #1
+    const body = mergedBody({ body: 'Fixes #999' });
+    const res = await postWebhook({
+      body,
+      deliveryId: 'd-wrongissue',
+      signature: sign(body, SIGNING_KEY),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.ignored).toMatch(/issue/);
     const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
     expect(bounty?.lifecycleStatus).toBe('submitted');
   });

@@ -1,7 +1,7 @@
 /**
  * Integration tests for the claim & submission flow.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import mongoose from 'mongoose';
 import { randomBytes } from 'crypto';
@@ -18,7 +18,9 @@ process.env['MONGO_URI'] = mongod.getUri();
 
 const { createApp } = await import('../api/app.js');
 const { signSession } = await import('../shared/auth/jwt.js');
-const { BountyModel, ClaimModel, HunterModel } = await import('../shared/models/index.js');
+const { BountyModel, ClaimModel, HunterModel, OAuthTokenModel } =
+  await import('../shared/models/index.js');
+const { encrypt } = await import('../shared/crypto/tokenCrypto.js');
 
 const HUNTER = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const HUNTER2 = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
@@ -64,10 +66,12 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await Promise.all([
     BountyModel.deleteMany({}),
     ClaimModel.deleteMany({}),
     HunterModel.deleteMany({}),
+    OAuthTokenModel.deleteMany({}),
   ]);
 });
 
@@ -158,6 +162,61 @@ describe('claims', () => {
     expect(submit.status).toBe(200);
     const claim = await ClaimModel.findOne({ bountyId }).lean();
     expect(claim?.githubLoginAtSubmit).toBe('snapshot-login');
+  });
+
+  it('warns when the PR is for a different issue, then submits on confirm', async () => {
+    const app = createApp();
+    const bountyId = await makeBounty(); // bounty is for issue #1
+    await linkGithub(HUNTER);
+    // An OAuth token must exist for the submit-time issue check to run.
+    const sealed = encrypt('gho_test_token');
+    await OAuthTokenModel.create({
+      githubUserId: 1,
+      githubLogin: 'octocat',
+      encryptedToken: sealed.ciphertext,
+      iv: sealed.iv,
+      authTag: sealed.authTag,
+      keyVersion: sealed.keyVersion,
+      scopes: ['repo'],
+      linkedAddress: HUNTER,
+    });
+    await request(app).post(`/bounties/${bountyId}/claim`).set('Cookie', COOKIE);
+
+    // GraphQL reports the PR closes issue #999, not the bounty's #1.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: {
+                repository: {
+                  pullRequest: { closingIssuesReferences: { nodes: [{ number: 999 }] } },
+                },
+              },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      ),
+    );
+
+    const prUrl = 'https://github.com/o/n/pull/5';
+    const warn = await request(app)
+      .post(`/bounties/${bountyId}/submit`)
+      .set('Cookie', COOKIE)
+      .send({ prUrl });
+    expect(warn.status).toBe(200);
+    expect(warn.body.warning).toBe('issue_mismatch');
+    expect(warn.body.expectedIssue).toBe(1);
+
+    // Confirming proceeds with the submission.
+    const ok = await request(app)
+      .post(`/bounties/${bountyId}/submit`)
+      .set('Cookie', COOKIE)
+      .send({ prUrl, confirmMismatch: true });
+    expect(ok.status).toBe(200);
+    expect(ok.body.status).toBe('submitted');
   });
 
   it('releases early, then enforces the re-claim cooldown', async () => {

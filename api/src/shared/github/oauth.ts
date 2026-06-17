@@ -164,6 +164,56 @@ export async function fetchPullRequest(
   };
 }
 
+/**
+ * Extract `#N` issue references from PR text (title/body). Tokenless, so the
+ * merge gate can use it on the signed webhook payload without a GitHub call.
+ */
+export function extractIssueRefs(text: string | undefined | null): number[] {
+  if (!text) return [];
+  const out = new Set<number>();
+  for (const m of text.matchAll(/#(\d+)/g)) {
+    const n = Number(m[1]);
+    if (Number.isInteger(n)) out.add(n);
+  }
+  return [...out];
+}
+
+/**
+ * Issues a PR formally closes (via "Closes #N" links or the GitHub UI), the most
+ * accurate signal of which issue a PR addresses. GraphQL-only — used at submit
+ * time, where the hunter's token is available. Returns the linked issue numbers.
+ */
+export async function fetchPrClosingIssues(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  accessToken: string,
+): Promise<number[]> {
+  const query =
+    'query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo)' +
+    '{pullRequest(number:$pr){closingIssuesReferences(first:20){nodes{number}}}}}';
+  const res = await fetch(`${API_BASE}/graphql`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ query, variables: { owner, repo, pr: prNumber } }),
+    signal: ghSignal(),
+  });
+  if (!res.ok) throw new GithubError(`Fetching PR closing issues failed (${res.status})`);
+  const data = (await res.json()) as {
+    data?: {
+      repository?: {
+        pullRequest?: { closingIssuesReferences?: { nodes?: Array<{ number?: number }> } };
+      };
+    };
+  };
+  const nodes = data.data?.repository?.pullRequest?.closingIssuesReferences?.nodes ?? [];
+  return nodes.map((n) => n.number).filter((n): n is number => typeof n === 'number');
+}
+
 export interface RepoMetadata {
   id: number;
   fullName: string;
