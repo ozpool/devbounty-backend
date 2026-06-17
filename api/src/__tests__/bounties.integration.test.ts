@@ -177,6 +177,10 @@ describe('bounties', () => {
     expect(board.body.total).toBe(1);
     expect(board.body.items[0].pendingConfirmation).toBe(false);
 
+    // The recorded tx hash is exposed on the bounty DTO for the explorer link.
+    const detail = await request(app).get(`/bounties/${id}`);
+    expect(detail.body.txCreate).toBe(tx);
+
     // A non-maintainer cannot record a deposit.
     const otherCookie = `devbounty_jwt=${signSession({
       sub: '0x2222222222222222222222222222222222222222',

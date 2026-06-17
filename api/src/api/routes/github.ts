@@ -18,6 +18,7 @@ import {
 } from '../../shared/github/oauth.js';
 import { encrypt } from '../../shared/crypto/tokenCrypto.js';
 import { OAuthTokenModel, HunterModel } from '../../shared/models/index.js';
+import { writeAudit } from '../../shared/audit/writeAudit.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
 const router = Router();
@@ -53,12 +54,15 @@ function redirectLinkError(res: Response, reason: string): void {
   res.redirect(`${env.APP_BASE_URL}/?github=error&reason=${reason}`);
 }
 
-// GET /auth/github/start — redirect the logged-in wallet to GitHub's consent screen.
+// GET /auth/github/start — redirect the logged-in wallet to GitHub's consent
+// screen. `?switch=1` forces GitHub's authorize screen to re-appear so the user
+// can pick/confirm a different account instead of silently reusing the session.
 router.get('/start', requireAuth, (req: Request, res: Response): void => {
   const { address } = getAuth(req);
   const nonce = randomBytes(16).toString('hex');
   res.cookie(STATE_NONCE_COOKIE, nonce, nonceCookieOptions());
-  res.redirect(buildAuthorizeUrl(signGithubState(address, nonce)));
+  const forcePrompt = req.query.switch === '1';
+  res.redirect(buildAuthorizeUrl(signGithubState(address, nonce), { forcePrompt }));
 });
 
 const callbackQuery = z.object({ code: z.string().min(1), state: z.string().min(1) });
@@ -136,6 +140,28 @@ router.get('/callback', async (req: Request, res: Response, next: NextFunction):
       redirectLinkError(res, 'wallet_already_linked');
       return;
     }
+    next(err);
+  }
+});
+
+// DELETE /auth/github/link — unlink the caller's GitHub account. Safe at any
+// time: an in-flight claim snapshots its GitHub identity at submit, so pending
+// payouts are unaffected; only future claims (which require a link) are blocked
+// until the wallet links again. Idempotent — unlinking when nothing is linked
+// returns { unlinked: false }.
+router.delete('/link', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  const { address } = getAuth(req);
+  try {
+    const removed = await OAuthTokenModel.deleteOne({ linkedAddress: address });
+    await HunterModel.updateOne({ address }, { $unset: { githubLogin: '', githubUserId: '' } });
+    await writeAudit({
+      action: 'github.unlinked',
+      actor: getAuth(req),
+      target: { type: 'hunter', id: address },
+      ip: req.ip,
+    });
+    res.json({ unlinked: removed.deletedCount > 0 });
+  } catch (err: unknown) {
     next(err);
   }
 });

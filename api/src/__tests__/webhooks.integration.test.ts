@@ -64,6 +64,7 @@ function mergedBody(
     baseRef?: string;
     baseRepoId?: number;
     author?: string;
+    body?: string;
   } = {},
 ): string {
   const {
@@ -72,6 +73,8 @@ function mergedBody(
     baseRef = DEFAULT_BRANCH,
     baseRepoId = REPO_ID,
     author = HUNTER_LOGIN,
+    // The seeded bounty is for issue #1, so reference it by default.
+    body = 'Fixes #1',
   } = opts;
   return JSON.stringify({
     action: 'closed',
@@ -82,6 +85,7 @@ function mergedBody(
       merge_commit_sha: sha,
       base: { ref: baseRef, repo: { id: baseRepoId } },
       user: { login: author },
+      body,
     },
   });
 }
@@ -296,6 +300,68 @@ describe('POST /webhooks/github', () => {
     expect(res.body.ignored).toMatch(/author/);
     const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
     expect(bounty?.lifecycleStatus).toBe('submitted');
+  });
+
+  it('pays nobody when the merged PR is for a different issue', async () => {
+    await seedRepo();
+    await seedBountyAndClaim(); // bounty is for issue #1
+    const body = mergedBody({ body: 'Fixes #999' });
+    const res = await postWebhook({
+      body,
+      deliveryId: 'd-wrongissue',
+      signature: sign(body, SIGNING_KEY),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.ignored).toMatch(/issue/);
+    const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
+    expect(bounty?.lifecycleStatus).toBe('submitted');
+  });
+
+  it('settles using the login snapshotted at submit, even after the hunter relinks a different account', async () => {
+    await seedRepo();
+    // The hunter has since relinked a DIFFERENT GitHub account on their profile...
+    await HunterModel.create({
+      address: HUNTER,
+      githubLogin: 'relinked-other-account',
+      totalEarnedUsdc: '0',
+      payoutCount: 0,
+      reposContributed: 0,
+      languages: [],
+    });
+    await BountyModel.create({
+      bountyId: BOUNTY_ID,
+      maintainerAddress: '0xmaintainer',
+      repo: { owner: 'octo', name: 'repo', fullName: 'octo/repo', githubRepoId: REPO_ID },
+      issueNumber: 1,
+      issueTitle: 'Fix the bug',
+      issueUrl: 'https://github.com/octo/repo/issues/1',
+      amountUsdc: '500',
+      language: 'typescript',
+      refundWindowSnapshot: 1209600,
+      lifecycleStatus: 'submitted',
+    });
+    // ...but the claim snapshotted the ORIGINAL login at submit time, which is what
+    // the merge author must match — a relink must not strand an in-flight payout.
+    await ClaimModel.create({
+      bountyId: BOUNTY_ID,
+      hunterAddress: HUNTER,
+      status: 'submitted',
+      expiresAt: new Date(Date.now() + 1_000_000_000),
+      prUrl: `https://github.com/octo/repo/pull/${PR_NUMBER}`,
+      prNumber: PR_NUMBER,
+      repoIdAtSubmit: REPO_ID,
+      githubLoginAtSubmit: HUNTER_LOGIN,
+    });
+    const body = mergedBody({ author: HUNTER_LOGIN });
+    const res = await postWebhook({
+      body,
+      deliveryId: 'd-relink',
+      signature: sign(body, SIGNING_KEY),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ matched: true, bountyId: BOUNTY_ID });
+    const bounty = await BountyModel.findOne({ bountyId: BOUNTY_ID }).lean();
+    expect(bounty?.lifecycleStatus).toBe('releasing');
   });
 
   it('ignores a non-merge pull request event', async () => {

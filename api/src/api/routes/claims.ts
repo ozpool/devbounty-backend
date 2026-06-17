@@ -8,7 +8,7 @@ import {
   OAuthTokenModel,
 } from '../../shared/models/index.js';
 import { decryptToString } from '../../shared/crypto/tokenCrypto.js';
-import { fetchPullRequest, GithubError } from '../../shared/github/oauth.js';
+import { fetchPullRequest, fetchPrClosingIssues, GithubError } from '../../shared/github/oauth.js';
 import { settleMergedClaim } from '../../shared/bounty/settleMerge.js';
 import { writeAudit } from '../../shared/audit/writeAudit.js';
 import { AppError } from '../../shared/utils/AppError.js';
@@ -157,7 +157,39 @@ const submitBody = z.object({
       /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+$/,
       'expected a GitHub pull request URL',
     ),
+  // Set true to proceed past the "PR is for a different issue" warning.
+  confirmMismatch: z.boolean().optional(),
 });
+
+// Does the PR formally close the bounty's issue? Uses the hunter's token to read
+// GitHub's closing-issue links (the accurate signal). Returns 'unknown' when it
+// can't tell (no token, no linked issues, or a GitHub error) so the early warning
+// never blocks on a flaky read — the merge gate is the real enforcement.
+async function classifyIssueMatch(
+  address: string,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  bountyIssue: number,
+): Promise<'match' | 'mismatch' | 'unknown'> {
+  // Not .lean(): lean() returns Mongoose Binary for Buffer fields, but
+  // decryptToString needs real Node Buffers to slice the iv/authTag.
+  const link = await OAuthTokenModel.findOne({ linkedAddress: address });
+  if (!link) return 'unknown';
+  try {
+    const token = decryptToString({
+      ciphertext: link.encryptedToken,
+      iv: link.iv,
+      authTag: link.authTag,
+      keyVersion: link.keyVersion,
+    });
+    const closing = await fetchPrClosingIssues(owner, repo, prNumber, token);
+    if (closing.length === 0) return 'unknown';
+    return closing.includes(bountyIssue) ? 'match' : 'mismatch';
+  } catch {
+    return 'unknown';
+  }
+}
 
 // POST /bounties/:id/submit — attach a PR to the active claim.
 router.post('/:id/submit', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
@@ -191,9 +223,30 @@ router.post('/:id/submit', requireAuth, async (req: Request, res: Response, next
       next(AppError.forbidden('No active claim to submit against'));
       return;
     }
+    // If the PR is for a different issue than the bounty's, warn once. The hunter
+    // can confirm to proceed, but the merge gate still refuses to pay on a real
+    // mismatch — this is just an early heads-up.
+    if (!parsed.data.confirmMismatch) {
+      const match = await classifyIssueMatch(
+        address,
+        bounty.repo.owner,
+        bounty.repo.name,
+        prNumber,
+        bounty.issueNumber,
+      );
+      if (match === 'mismatch') {
+        res.json({ warning: 'issue_mismatch', expectedIssue: bounty.issueNumber });
+        return;
+      }
+    }
+    // Snapshot the hunter's GitHub identity now, so the merge-time author check
+    // is pinned to who they were at submit and survives a later unlink/relink.
+    const hunter = await HunterModel.findOne({ address }).lean();
     claim.prUrl = prUrl;
     claim.prNumber = prNumber;
     claim.repoIdAtSubmit = bounty.repo.githubRepoId;
+    claim.githubLoginAtSubmit = hunter?.githubLogin;
+    claim.githubUserIdAtSubmit = hunter?.githubUserId;
     claim.status = 'submitted';
     await claim.save();
     await BountyModel.updateOne({ bountyId }, { $set: { lifecycleStatus: 'submitted' } });
