@@ -117,20 +117,31 @@ describe('GitHub OAuth linking', () => {
     expect(link?.encryptedToken).toBeDefined();
   });
 
-  it('rejects a callback with an invalid state', async () => {
+  it('redirects an invalid-state callback to the app with an error reason', async () => {
     installFetchMock();
     const res = await request(createApp()).get('/auth/github/callback?code=abc&state=garbage');
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('github=error');
+    expect(res.headers.location).toContain('reason=state_invalid');
   });
 
-  it('rejects a callback whose state is not bound to this browser', async () => {
+  it('redirects a callback whose state is not bound to this browser', async () => {
     installFetchMock();
     // Validly-signed state but no matching nonce cookie — the CSRF guard.
     const state = signGithubState(ADDRESS, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     const res = await request(createApp()).get(
       `/auth/github/callback?code=abc&state=${encodeURIComponent(state)}`,
     );
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('reason=state_invalid');
+  });
+
+  it('redirects to the app when the user declines on the GitHub consent screen', async () => {
+    installFetchMock();
+    const res = await request(createApp()).get('/auth/github/callback?error=access_denied');
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('github=error');
+    expect(res.headers.location).toContain('reason=denied');
   });
 
   it('lists only admin repos for a linked wallet', async () => {
