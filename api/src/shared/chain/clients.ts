@@ -68,6 +68,7 @@ export function getWalletClient(): WalletClient {
 
 // Mirror of the contract's Status enum order: None=0, Open=1, Paid=2, Refunded=3.
 export const ON_CHAIN_STATUS_NONE = 0;
+export const ON_CHAIN_STATUS_PAID = 2;
 
 /**
  * Read a bounty's on-chain escrow status (the `bounties` mapping's `status`
