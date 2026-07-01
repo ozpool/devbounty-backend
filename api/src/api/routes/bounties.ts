@@ -15,6 +15,7 @@ import {
   getOnChainBountyStatus,
   verifyEscrowEventTx,
   ON_CHAIN_STATUS_NONE,
+  ON_CHAIN_STATUS_PAID,
 } from '../../shared/chain/clients.js';
 import { AppError } from '../../shared/utils/AppError.js';
 
@@ -256,6 +257,23 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction): Prom
     if (!bounty) {
       next(AppError.notFound('Bounty not found'));
       return;
+    }
+    // A merged claim's release is fired detached (Scene 6), so 'releasing' can sit
+    // that way for minutes if the indexer is behind (e.g. waking from an idle
+    // sleep). The escrow's on-chain status is the ground truth and a single read
+    // is cheap, so check it live and reflect 'paid' immediately instead of making
+    // the viewer wait on the indexer's catch-up scan. Read-only: the indexer
+    // remains the sole writer of the stored record.
+    if (isIndexerConfigured() && bounty.lifecycleStatus === 'releasing') {
+      try {
+        const onChain = await getOnChainBountyStatus(bounty.bountyId as `0x${string}`);
+        if (onChain === ON_CHAIN_STATUS_PAID) {
+          bounty.onChainStatus = 'Paid';
+          bounty.lifecycleStatus = 'paid';
+        }
+      } catch {
+        // RPC hiccup — fall back to the stored snapshot; the indexer will catch up.
+      }
     }
     const claims = await ClaimModel.find({
       bountyId: bounty.bountyId,
